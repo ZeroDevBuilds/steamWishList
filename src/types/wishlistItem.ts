@@ -35,4 +35,8 @@ export interface WishlistResponse {
   games: WishlistGame[];
   warnings: string[];
   generatedAt: string;
+  /** True when DEBUG_GAME_LIMIT is configured server-side, so the UI can offer the debug controls. */
+  debugCapable: boolean;
+  /** The limit applied to this response: a number, null when debug mode is capable but disabled, undefined when not debug-capable. */
+  debugGameLimit?: number | null;
 }

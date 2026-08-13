@@ -49,6 +49,24 @@ h1 {
   color: var(--muted);
 }
 
+.debug-controls {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.debug-controls input[type="number"] {
+  width: 4.5rem;
+}
+
+.debug-controls input[type="number"]:disabled {
+  opacity: 0.5;
+}
+
+.hidden {
+  display: none;
+}
+
 select,
 input[type="search"],
 button {

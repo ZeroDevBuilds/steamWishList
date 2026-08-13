@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { config } from "../config.js";
-import { getOrFetch } from "../cache/cacheStore.js";
+import { cacheGet, cacheSet, getOrFetch } from "../cache/cacheStore.js";
 import { mapWithConcurrency } from "../utils/concurrency.js";
 import { fetchWishlist } from "./steamWishlist.js";
 import { fetchSteamPrice } from "./steamStore.js";
@@ -16,10 +16,29 @@ function hashIds(ids: string[]): string {
   return createHash("sha1").update([...ids].sort().join(",")).digest("hex").slice(0, 16);
 }
 
-export async function getWishlistData(options: { forceRefresh?: boolean } = {}): Promise<WishlistResponse> {
-  const { forceRefresh = false } = options;
+function gameCacheKey(appid: number, cc: string): string {
+  return `wishlist:game:${cc}:${appid}`;
+}
+
+export async function getWishlistData(
+  options: { forceRefresh?: boolean; forceAllGames?: boolean; debugGameLimit?: number | null } = {},
+): Promise<WishlistResponse> {
+  const { forceRefresh = false, forceAllGames = false } = options;
   const cc = config.countryCode;
   const warnings: string[] = [];
+
+  // Debug capability only exists when DEBUG_GAME_LIMIT is configured server-side. Within that,
+  // the UI can narrow the limit (a number), lift it entirely for one request (null), or leave it
+  // unset to fall back to the server default (undefined).
+  const debugCapable = config.debugGameLimit !== undefined;
+  let debugGameLimit: number | undefined;
+  if (debugCapable) {
+    if (options.debugGameLimit === undefined) {
+      debugGameLimit = config.debugGameLimit;
+    } else if (options.debugGameLimit !== null) {
+      debugGameLimit = options.debugGameLimit;
+    }
+  }
 
   const fullWishlist = await getOrFetch(
     `steam:wishlist:${config.steamId64}`,
@@ -27,111 +46,137 @@ export async function getWishlistData(options: { forceRefresh?: boolean } = {}):
     fetchWishlist,
     { forceRefresh },
   );
-  const wishlist =
-    config.debugGameLimit !== undefined ? fullWishlist.slice(0, config.debugGameLimit) : fullWishlist;
-  if (config.debugGameLimit !== undefined) {
+  const wishlist = debugGameLimit !== undefined ? fullWishlist.slice(0, debugGameLimit) : fullWishlist;
+  if (debugGameLimit !== undefined) {
     logger.info(`DEBUG_GAME_LIMIT set — enriching only ${wishlist.length} of ${fullWishlist.length} wishlist games`);
   }
 
-  // Steam prices and ITAD lookups hit independent APIs (each internally throttled),
-  // so run them concurrently rather than one after the other.
-  const itadIdByAppid = new Map<number, string | null>();
-  const [steamPrices] = await Promise.all([
-    mapWithConcurrency(wishlist, CONCURRENCY, (item) =>
-      getOrFetch(
-        `steam:price:${item.appid}:${cc}`,
-        config.cacheTtl.steamPriceSec,
-        () => fetchSteamPrice(item.appid, cc),
-        { forceRefresh },
-      ),
-    ),
-    mapWithConcurrency(wishlist, CONCURRENCY, async (item) => {
-      try {
-        const itadId = await getOrFetch(
-          `itad:lookup:${item.appid}`,
-          config.cacheTtl.itadLookupSec,
-          () => lookupItadId(item.appid),
-          { forceRefresh },
-        );
-        itadIdByAppid.set(item.appid, itadId);
-      } catch (err) {
-        logger.warn(`ITAD lookup failed for appid ${item.appid}`, err);
-        warnings.push(`Could not look up ITAD data for appid ${item.appid}`);
-        itadIdByAppid.set(item.appid, null);
+  // Each game's fully-enriched data is cached for CACHE_TTL_GAME_SEC (24h by default). Only
+  // games whose cache has expired (or was never cached) trigger fresh Steam/ITAD API calls —
+  // this is what actually protects against rate limits, independent of the refresh button.
+  const cachedGames = new Map<number, WishlistGame>();
+  const staleItems = wishlist.filter((item) => {
+    if (!forceAllGames) {
+      const cached = cacheGet<WishlistGame>(gameCacheKey(item.appid, cc));
+      if (cached) {
+        cachedGames.set(item.appid, cached);
+        return false;
       }
-    }),
-  ]);
-
-  const resolvedItadIds = [...new Set([...itadIdByAppid.values()].filter((id): id is string => id !== null))];
-  const idsHash = hashIds(resolvedItadIds);
-
-  let pricesByItadId: Record<string, ItadDeal[]> = {};
-  let historyLowByItadId: Record<string, ItadHistoryLow> = {};
-  try {
-    [pricesByItadId, historyLowByItadId] = await Promise.all([
-      getOrFetch(
-        `itad:prices:${cc}:${idsHash}`,
-        config.cacheTtl.itadPriceSec,
-        () => fetchItadPrices(resolvedItadIds, cc),
-        { forceRefresh },
-      ),
-      getOrFetch(
-        `itad:historylow:${cc}:${idsHash}`,
-        config.cacheTtl.itadPriceSec,
-        () => fetchItadHistoryLow(resolvedItadIds, cc),
-        { forceRefresh },
-      ),
-    ]);
-  } catch (err) {
-    logger.warn("ITAD batch price/historylow fetch failed", err);
-    warnings.push("Could not fetch current deals / historical lows from ITAD");
+    }
+    return true;
+  });
+  if (forceAllGames && wishlist.length > 0) {
+    logger.info(`Force refresh — bypassing the 24h game cache for all ${wishlist.length} wishlist games`);
   }
 
-  const games: WishlistGame[] = wishlist.map((item, index) => {
-    const steamPrice = steamPrices[index];
-    const itadId = itadIdByAppid.get(item.appid) ?? null;
-    const historyLow = itadId ? historyLowByItadId[itadId] : undefined;
-    const deals = itadId ? pricesByItadId[itadId] : undefined;
+  if (staleItems.length > 0) {
+    // Steam prices and ITAD lookups hit independent APIs (each internally throttled),
+    // so run them concurrently rather than one after the other.
+    const itadIdByAppid = new Map<number, string | null>();
+    const [steamPrices] = await Promise.all([
+      mapWithConcurrency(staleItems, CONCURRENCY, (item) =>
+        getOrFetch(
+          `steam:price:${item.appid}:${cc}`,
+          config.cacheTtl.steamPriceSec,
+          () => fetchSteamPrice(item.appid, cc),
+          { forceRefresh },
+        ),
+      ),
+      mapWithConcurrency(staleItems, CONCURRENCY, async (item) => {
+        try {
+          const itadId = await getOrFetch(
+            `itad:lookup:${item.appid}`,
+            config.cacheTtl.itadLookupSec,
+            () => lookupItadId(item.appid),
+            { forceRefresh },
+          );
+          itadIdByAppid.set(item.appid, itadId);
+        } catch (err) {
+          logger.warn(`ITAD lookup failed for appid ${item.appid}`, err);
+          warnings.push(`Could not look up ITAD data for appid ${item.appid}`);
+          itadIdByAppid.set(item.appid, null);
+        }
+      }),
+    ]);
 
-    const currentPrice = steamPrice.priceOverview ? steamPrice.priceOverview.final / 100 : null;
-    const historyLowPrice = historyLow ? historyLow.price : null;
+    const resolvedItadIds = [...new Set([...itadIdByAppid.values()].filter((id): id is string => id !== null))];
+    const idsHash = hashIds(resolvedItadIds);
 
-    let isLowestEver: boolean | null = null;
-    if (currentPrice !== null && historyLowPrice !== null) {
-      isLowestEver = currentPrice <= historyLowPrice + PRICE_EPSILON;
+    let pricesByItadId: Record<string, ItadDeal[]> = {};
+    let historyLowByItadId: Record<string, ItadHistoryLow> = {};
+    if (resolvedItadIds.length > 0) {
+      try {
+        [pricesByItadId, historyLowByItadId] = await Promise.all([
+          getOrFetch(
+            `itad:prices:${cc}:${idsHash}`,
+            config.cacheTtl.itadPriceSec,
+            () => fetchItadPrices(resolvedItadIds, cc),
+            { forceRefresh },
+          ),
+          getOrFetch(
+            `itad:historylow:${cc}:${idsHash}`,
+            config.cacheTtl.itadPriceSec,
+            () => fetchItadHistoryLow(resolvedItadIds, cc),
+            { forceRefresh },
+          ),
+        ]);
+      } catch (err) {
+        logger.warn("ITAD batch price/historylow fetch failed", err);
+        warnings.push("Could not fetch current deals / historical lows from ITAD");
+      }
     }
 
-    const bestDeal = deals?.length
-      ? deals.reduce((best, d) => (d.price < best.price ? d : best))
-      : null;
+    staleItems.forEach((item, index) => {
+      const steamPrice = steamPrices[index];
+      const itadId = itadIdByAppid.get(item.appid) ?? null;
+      const historyLow = itadId ? historyLowByItadId[itadId] : undefined;
+      const deals = itadId ? pricesByItadId[itadId] : undefined;
 
-    return {
-      appid: item.appid,
-      name: steamPrice.name ?? `App ${item.appid}`,
-      headerImage: `https://cdn.akamai.steamstatic.com/steam/apps/${item.appid}/header.jpg`,
-      storeUrl: `https://store.steampowered.com/app/${item.appid}`,
+      const currentPrice = steamPrice.priceOverview ? steamPrice.priceOverview.final / 100 : null;
+      const historyLowPrice = historyLow ? historyLow.price : null;
 
-      priority: item.priority,
-      dateAdded: item.dateAdded,
+      let isLowestEver: boolean | null = null;
+      if (currentPrice !== null && historyLowPrice !== null) {
+        isLowestEver = currentPrice <= historyLowPrice + PRICE_EPSILON;
+      }
 
-      priceStatus: steamPrice.priceOverview ? "ok" : "unavailable",
-      currency: steamPrice.priceOverview?.currency ?? null,
-      currentPrice,
-      initialPrice: steamPrice.priceOverview ? steamPrice.priceOverview.initial / 100 : null,
-      discountPercent: steamPrice.priceOverview?.discountPercent ?? null,
+      const bestDeal = deals?.length
+        ? deals.reduce((best, d) => (d.price < best.price ? d : best))
+        : null;
 
-      itadStatus: itadId ? "ok" : "unmatched",
-      historyLowPrice,
-      historyLowDate: historyLow?.timestamp ?? null,
-      isLowestEver,
-      bestDealElsewhere:
-        bestDeal && currentPrice !== null && bestDeal.price < currentPrice - PRICE_EPSILON
-          ? { shop: bestDeal.shop, price: bestDeal.price }
-          : null,
+      const game: WishlistGame = {
+        appid: item.appid,
+        name: steamPrice.name ?? `App ${item.appid}`,
+        headerImage: `https://cdn.akamai.steamstatic.com/steam/apps/${item.appid}/header.jpg`,
+        storeUrl: `https://store.steampowered.com/app/${item.appid}`,
 
-      nextSaleEstimate: null, // populated by the stretch feature (M7), if built
-    };
-  });
+        priority: item.priority,
+        dateAdded: item.dateAdded,
+
+        priceStatus: steamPrice.priceOverview ? "ok" : "unavailable",
+        currency: steamPrice.priceOverview?.currency ?? null,
+        currentPrice,
+        initialPrice: steamPrice.priceOverview ? steamPrice.priceOverview.initial / 100 : null,
+        discountPercent: steamPrice.priceOverview?.discountPercent ?? null,
+
+        itadStatus: itadId ? "ok" : "unmatched",
+        historyLowPrice,
+        historyLowDate: historyLow?.timestamp ?? null,
+        isLowestEver,
+        bestDealElsewhere:
+          bestDeal && currentPrice !== null && bestDeal.price < currentPrice - PRICE_EPSILON
+            ? { shop: bestDeal.shop, price: bestDeal.price }
+            : null,
+
+        nextSaleEstimate: null, // populated by the stretch feature (M7), if built
+      };
+
+      cacheSet(gameCacheKey(item.appid, cc), game, config.cacheTtl.gameSec);
+      cachedGames.set(item.appid, game);
+    });
+  }
+
+  const games: WishlistGame[] = wishlist.map((item) => cachedGames.get(item.appid)!);
 
   games.sort((a, b) => {
     const discountA = a.discountPercent ?? -1;
@@ -142,5 +187,11 @@ export async function getWishlistData(options: { forceRefresh?: boolean } = {}):
     return priceA - priceB;
   });
 
-  return { games, warnings, generatedAt: new Date().toISOString() };
+  return {
+    games,
+    warnings,
+    generatedAt: new Date().toISOString(),
+    debugCapable,
+    debugGameLimit: debugCapable ? (debugGameLimit ?? null) : undefined,
+  };
 }

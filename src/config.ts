@@ -42,5 +42,7 @@ export const config = {
     steamPriceSec: intEnv("CACHE_TTL_STEAM_PRICE_SEC", 3600),
     itadLookupSec: intEnv("CACHE_TTL_ITAD_LOOKUP_SEC", 2592000),
     itadPriceSec: intEnv("CACHE_TTL_ITAD_PRICE_SEC", 3600),
+    /** How long a game's fully-enriched data (price + ITAD deal/history) is reused before re-fetching. */
+    gameSec: intEnv("CACHE_TTL_GAME_SEC", 86400),
   },
 };

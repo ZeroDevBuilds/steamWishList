@@ -18,7 +18,7 @@ export function cacheGet<T>(key: string): T | undefined {
   }
 }
 
-function cacheSet<T>(key: string, value: T, ttlSeconds: number): void {
+export function cacheSet<T>(key: string, value: T, ttlSeconds: number): void {
   setStmt.run(key, JSON.stringify(value), Date.now() + ttlSeconds * 1000);
 }
 

@@ -21,6 +21,8 @@ interface WishlistResponse {
   games: WishlistGame[];
   warnings: string[];
   generatedAt: string;
+  debugCapable: boolean;
+  debugGameLimit?: number | null;
 }
 
 const statusEl = document.getElementById("status") as HTMLParagraphElement;
@@ -30,8 +32,14 @@ const onSaleCheckbox = document.getElementById("filter-on-sale") as HTMLInputEle
 const hideUnmatchedCheckbox = document.getElementById("filter-hide-unmatched") as HTMLInputElement;
 const searchInput = document.getElementById("filter-search") as HTMLInputElement;
 const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
+const forceRefreshBtn = document.getElementById("force-refresh-btn") as HTMLButtonElement;
+const debugControls = document.getElementById("debug-controls") as HTMLElement;
+const debugToggle = document.getElementById("debug-toggle") as HTMLInputElement;
+const debugLimitInput = document.getElementById("debug-limit-input") as HTMLInputElement;
 
 let allGames: WishlistGame[] = [];
+let debugCapable = false;
+let debugInitialized = false;
 
 function formatMoney(amount: number | null, currency: string | null): string {
   if (amount === null) return "—";
@@ -126,17 +134,41 @@ function render() {
   }
 }
 
-async function load(forceRefresh = false) {
-  statusEl.textContent = forceRefresh ? "Refreshing…" : "Loading wishlist…";
+async function load(forceRefresh = false, forceAll = false) {
+  statusEl.textContent = forceAll ? "Force refreshing every game…" : forceRefresh ? "Refreshing…" : "Loading wishlist…";
   statusEl.classList.remove("error");
   refreshBtn.disabled = true;
+  forceRefreshBtn.disabled = true;
   try {
-    const res = await fetch(`/api/wishlist${forceRefresh ? "?refresh=1" : ""}`);
+    const params = new URLSearchParams();
+    if (forceRefresh) params.set("refresh", "1");
+    if (forceAll) params.set("force", "1");
+    if (debugCapable) {
+      if (!debugToggle.checked) {
+        params.set("debug", "0");
+      } else if (debugLimitInput.value.trim() !== "") {
+        params.set("limit", debugLimitInput.value.trim());
+      }
+    }
+    const query = params.toString();
+    const res = await fetch(`/api/wishlist${query ? `?${query}` : ""}`);
     if (!res.ok) {
       throw new Error(`Server responded with ${res.status}`);
     }
     const data: WishlistResponse = await res.json();
     allGames = data.games;
+
+    debugCapable = data.debugCapable;
+    debugControls.classList.toggle("hidden", !debugCapable);
+    if (debugCapable && !debugInitialized) {
+      debugToggle.checked = data.debugGameLimit !== null && data.debugGameLimit !== undefined;
+      debugLimitInput.disabled = !debugToggle.checked;
+      if (data.debugGameLimit !== null && data.debugGameLimit !== undefined) {
+        debugLimitInput.value = String(data.debugGameLimit);
+      }
+      debugInitialized = true;
+    }
+
     const warningText = data.warnings.length ? ` (${data.warnings.length} warning(s) — see console)` : "";
     if (data.warnings.length) console.warn("Wishlist warnings:", data.warnings);
     statusEl.textContent = `${data.games.length} games · updated ${new Date(data.generatedAt).toLocaleTimeString()}${warningText}`;
@@ -146,6 +178,7 @@ async function load(forceRefresh = false) {
     statusEl.classList.add("error");
   } finally {
     refreshBtn.disabled = false;
+    forceRefreshBtn.disabled = false;
   }
 }
 
@@ -154,5 +187,9 @@ onSaleCheckbox.addEventListener("change", render);
 hideUnmatchedCheckbox.addEventListener("change", render);
 searchInput.addEventListener("input", render);
 refreshBtn.addEventListener("click", () => load(true));
+forceRefreshBtn.addEventListener("click", () => load(true, true));
+debugToggle.addEventListener("change", () => {
+  debugLimitInput.disabled = !debugToggle.checked;
+});
 
 load();

@@ -6,9 +6,24 @@ import { logger } from "../utils/logger.js";
 export const wishlistRouter = Router();
 
 wishlistRouter.get("/wishlist", async (req, res) => {
-  const forceRefresh = req.query.refresh === "1";
+  // force=1 (Force Refresh) implies refresh=1 and additionally bypasses the 24h per-game
+  // cache for every game, not just stale ones — refresh=1 alone only bypasses the wishlist
+  // list cache and leaves fresh (<24h) per-game data untouched.
+  const forceAllGames = req.query.force === "1";
+  const forceRefresh = forceAllGames || req.query.refresh === "1";
+  // debug=0 explicitly disables the server-side game limit for this request (fetch everything).
+  // limit=N explicitly overrides it. Neither present falls back to the server default (undefined).
+  let debugGameLimit: number | null | undefined;
+  if (req.query.debug === "0") {
+    debugGameLimit = null;
+  } else if (typeof req.query.limit === "string" && req.query.limit.trim() !== "") {
+    const parsedLimit = Number.parseInt(req.query.limit, 10);
+    if (Number.isFinite(parsedLimit) && parsedLimit >= 0) {
+      debugGameLimit = parsedLimit;
+    }
+  }
   try {
-    const data = await getWishlistData({ forceRefresh });
+    const data = await getWishlistData({ forceRefresh, forceAllGames, debugGameLimit });
     res.json(data);
   } catch (err) {
     logger.error("Failed to build wishlist response", err);

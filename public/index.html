@@ -28,7 +28,18 @@
         Hide ITAD-unmatched
       </label>
       <input type="search" id="filter-search" placeholder="Search by name..." />
+      <span id="debug-controls" class="debug-controls hidden">
+        <label>
+          <input type="checkbox" id="debug-toggle" />
+          Debug mode
+        </label>
+        <label>
+          Game limit
+          <input type="number" id="debug-limit-input" min="0" step="1" />
+        </label>
+      </span>
       <button id="refresh-btn">Refresh</button>
+      <button id="force-refresh-btn" title="Bypass the 24h cache and re-fetch every game from Steam/ITAD">Force Refresh</button>
     </div>
   </header>
 
