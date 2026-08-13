@@ -71,11 +71,9 @@ export async function fetchItadPrices(
   return result;
 }
 
-// historylow/v1 returns the all-time low, which surfaces stale outlier sales from years ago
-// (e.g. a 2018 launch discount). We want "lowest in the recent past" instead, so we pull the
-// price-change log via history/v2 (scoped with `since`) and take the min ourselves.
-const HISTORY_LOOKBACK_DAYS = 365;
-
+// For a scoped window (years >= 1) we pull the price-change log via history/v2 (bounded with
+// `since`) and take the min ourselves — omitting `since` does NOT return the full log (ITAD
+// defaults to a short recent window in that case), so it cannot be used for "all time".
 interface HistoryRawEntry {
   timestamp: string;
   shop?: { id: number; name: string };
@@ -84,16 +82,19 @@ interface HistoryRawEntry {
   };
 }
 
-/** Lowest price seen for one ITAD game id within the last year, or null if none recorded. */
-export async function fetchItadHistoryLowRecent(
+/** Lowest price seen for one ITAD game id within the last `years` years (years >= 1), or null if none recorded. */
+export async function fetchItadHistoryLow(
   itadId: string,
   countryCode: string = config.countryCode,
+  years: number = 1,
 ): Promise<ItadHistoryLow | null> {
   await throttle();
-  const since = new Date(Date.now() - HISTORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const url = new URL(`${BASE_URL}/games/history/v2`);
   url.searchParams.set("id", itadId);
   url.searchParams.set("country", countryCode);
+  // ITAD rejects the milliseconds component that Date#toISOString() includes by default
+  // ("Invalid 'since' format" / HTTP 400) — strip it down to whole-second precision.
+  const since = new Date(Date.now() - years * 365 * 24 * 60 * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
   url.searchParams.set("since", since);
   const raw = await fetchJson<HistoryRawEntry[]>(url.toString(), {
     headers: authHeaders(),
@@ -108,4 +109,43 @@ export async function fetchItadHistoryLowRecent(
     shop: lowest.shop?.name ?? null,
     timestamp: lowest.timestamp,
   };
+}
+
+interface HistoryLowRawResponse {
+  id: string;
+  low?: {
+    shop?: { id: number; name: string };
+    price: { amount: number; currency: string };
+    timestamp: string;
+  };
+}
+
+/** All-time lowest price per ITAD game id, keyed by ITAD id (batched, like fetchItadPrices). */
+export async function fetchItadHistoryLowAllTime(
+  itadIds: string[],
+  countryCode: string = config.countryCode,
+): Promise<Record<string, ItadHistoryLow>> {
+  const result: Record<string, ItadHistoryLow> = {};
+  if (itadIds.length === 0) return result;
+
+  await throttle();
+  const url = new URL(`${BASE_URL}/games/historylow/v1`);
+  url.searchParams.set("country", countryCode);
+  const raw = await fetchJson<HistoryLowRawResponse[]>(url.toString(), {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(itadIds),
+    retries: 3,
+  });
+
+  for (const entry of raw) {
+    if (!entry.low) continue;
+    result[entry.id] = {
+      price: entry.low.price.amount,
+      currency: entry.low.price.currency,
+      shop: entry.low.shop?.name ?? null,
+      timestamp: entry.low.timestamp,
+    };
+  }
+  return result;
 }

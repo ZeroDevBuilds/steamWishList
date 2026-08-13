@@ -23,6 +23,7 @@ interface WishlistResponse {
   generatedAt: string;
   debugCapable: boolean;
   debugGameLimit?: number | null;
+  historyYears: number;
 }
 
 interface ProgressState {
@@ -46,10 +47,18 @@ const forceRefreshBtn = document.getElementById("force-refresh-btn") as HTMLButt
 const debugControls = document.getElementById("debug-controls") as HTMLElement;
 const debugToggle = document.getElementById("debug-toggle") as HTMLInputElement;
 const debugLimitInput = document.getElementById("debug-limit-input") as HTMLInputElement;
+const debugYearsInput = document.getElementById("debug-years-input") as HTMLInputElement;
 
 let allGames: WishlistGame[] = [];
 let debugCapable = false;
 let debugInitialized = false;
+let historyYears = 1;
+
+function historyWindowLabel(): string {
+  if (historyYears === 0) return "all time";
+  if (historyYears === 1) return "the past year";
+  return `the past ${historyYears} years`;
+}
 
 function formatMoney(amount: number | null, currency: string | null): string {
   if (amount === null) return "—";
@@ -120,17 +129,21 @@ function render() {
     if (g.itadStatus !== "ok") {
       lowestBlock = `<p class="status-flag">No price-history match on ITAD</p>`;
     } else if (g.isLowestEver === true) {
-      lowestBlock = `<p class="lowest-ever">✓ Lowest price in the past year</p>`;
+      lowestBlock = `<p class="lowest-ever">✓ Lowest price in ${historyWindowLabel()}</p>`;
     } else if (g.historyLowPrice !== null) {
-      lowestBlock = `<p class="not-lowest">Lowest in past year: ${formatMoney(g.historyLowPrice, g.currency)} (${formatDate(g.historyLowDate)})</p>`;
+      lowestBlock = `<p class="not-lowest">Lowest in ${historyWindowLabel()}: ${formatMoney(g.historyLowPrice, g.currency)} (${formatDate(g.historyLowDate)})</p>`;
     }
 
     const elsewhereBlock = g.bestDealElsewhere
       ? `<p class="elsewhere">Cheaper elsewhere: ${formatMoney(g.bestDealElsewhere.price, g.currency)} at ${g.bestDealElsewhere.shop}</p>`
       : "";
 
+    const potentialPurchaseBadge =
+      g.isLowestEver === true ? `<span class="potential-badge">Potential Purchase</span>` : "";
+
     card.innerHTML = `
       <a href="${g.storeUrl}" target="_blank" rel="noopener">
+        ${potentialPurchaseBadge}
         <img src="${g.headerImage}" alt="${g.name}" loading="lazy" />
       </a>
       <div class="body">
@@ -206,6 +219,9 @@ async function load(forceRefresh = false, forceAll = false) {
       } else if (debugLimitInput.value.trim() !== "") {
         params.set("limit", debugLimitInput.value.trim());
       }
+      if (debugYearsInput.value.trim() !== "") {
+        params.set("years", debugYearsInput.value.trim());
+      }
     }
     const query = params.toString();
     const res = await fetch(`/api/wishlist${query ? `?${query}` : ""}`);
@@ -214,6 +230,7 @@ async function load(forceRefresh = false, forceAll = false) {
     }
     const data: WishlistResponse = await res.json();
     allGames = data.games;
+    historyYears = data.historyYears;
 
     debugCapable = data.debugCapable;
     debugControls.classList.toggle("hidden", !debugCapable);
@@ -223,6 +240,7 @@ async function load(forceRefresh = false, forceAll = false) {
       if (data.debugGameLimit !== null && data.debugGameLimit !== undefined) {
         debugLimitInput.value = String(data.debugGameLimit);
       }
+      debugYearsInput.value = String(data.historyYears);
       debugInitialized = true;
     }
 
@@ -249,5 +267,6 @@ forceRefreshBtn.addEventListener("click", () => load(true, true));
 debugToggle.addEventListener("change", () => {
   debugLimitInput.disabled = !debugToggle.checked;
 });
+debugYearsInput.addEventListener("change", () => load());
 
 load();

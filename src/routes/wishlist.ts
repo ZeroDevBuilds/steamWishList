@@ -27,8 +27,17 @@ wishlistRouter.get("/wishlist", async (req, res) => {
       debugGameLimit = parsedLimit;
     }
   }
+  // `years` scopes the price-history-low lookback (1 = past year, 2 = past two years, ...);
+  // 0 means all-time. Falls back to the 1-year default when absent or invalid.
+  let historyYears: number | undefined;
+  if (typeof req.query.years === "string" && req.query.years.trim() !== "") {
+    const parsedYears = Number.parseInt(req.query.years, 10);
+    if (Number.isFinite(parsedYears) && parsedYears >= 0) {
+      historyYears = parsedYears;
+    }
+  }
   try {
-    const data = await getWishlistData({ forceRefresh, forceAllGames, debugGameLimit });
+    const data = await getWishlistData({ forceRefresh, forceAllGames, debugGameLimit, historyYears });
     res.json(data);
   } catch (err) {
     finishProgress();

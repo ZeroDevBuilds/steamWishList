@@ -4,7 +4,7 @@ import { cacheGet, cacheSet, getOrFetch } from "../cache/cacheStore.js";
 import { mapWithConcurrency } from "../utils/concurrency.js";
 import { fetchWishlist } from "./steamWishlist.js";
 import { fetchSteamPrice } from "./steamStore.js";
-import { lookupItadId, fetchItadPrices, fetchItadHistoryLowRecent } from "./itad.js";
+import { lookupItadId, fetchItadPrices, fetchItadHistoryLow, fetchItadHistoryLowAllTime } from "./itad.js";
 import { startProgress, setProgressPhase, incrementProgress, finishProgress } from "./progress.js";
 import { logger } from "../utils/logger.js";
 import type { WishlistGame, WishlistResponse } from "../types/wishlistItem.js";
@@ -17,14 +17,19 @@ function hashIds(ids: string[]): string {
   return createHash("sha1").update([...ids].sort().join(",")).digest("hex").slice(0, 16);
 }
 
-function gameCacheKey(appid: number, cc: string): string {
-  return `wishlist:game:${cc}:${appid}`;
+function gameCacheKey(appid: number, cc: string, historyYears: number): string {
+  return `wishlist:game:${cc}:${historyYears}y:${appid}`;
 }
 
 export async function getWishlistData(
-  options: { forceRefresh?: boolean; forceAllGames?: boolean; debugGameLimit?: number | null } = {},
+  options: {
+    forceRefresh?: boolean;
+    forceAllGames?: boolean;
+    debugGameLimit?: number | null;
+    historyYears?: number;
+  } = {},
 ): Promise<WishlistResponse> {
-  const { forceRefresh = false, forceAllGames = false } = options;
+  const { forceRefresh = false, forceAllGames = false, historyYears = 1 } = options;
   const cc = config.countryCode;
   const warnings: string[] = [];
 
@@ -59,7 +64,7 @@ export async function getWishlistData(
   const cachedGames = new Map<number, WishlistGame>();
   const staleItems = wishlist.filter((item) => {
     if (!forceAllGames) {
-      const cached = cacheGet<WishlistGame>(gameCacheKey(item.appid, cc));
+      const cached = cacheGet<WishlistGame>(gameCacheKey(item.appid, cc, historyYears));
       if (cached) {
         cachedGames.set(item.appid, cached);
         return false;
@@ -115,7 +120,7 @@ export async function getWishlistData(
     const idsHash = hashIds(resolvedItadIds);
 
     let pricesByItadId: Record<string, ItadDeal[]> = {};
-    const historyLowByItadId: Record<string, ItadHistoryLow> = {};
+    let historyLowByItadId: Record<string, ItadHistoryLow> = {};
     if (resolvedItadIds.length > 0) {
       setProgressPhase("Fetching deal details…", resolvedItadIds.length);
       try {
@@ -130,26 +135,43 @@ export async function getWishlistData(
         warnings.push("Could not fetch current deals from ITAD");
       }
 
-      // history/v2 (unlike historylow/v1) only accepts one game id per call, so this is
-      // fetched per-game and cached per-game rather than batched like the prices call above.
-      await mapWithConcurrency(
-        resolvedItadIds,
-        CONCURRENCY,
-        async (itadId) => {
-          try {
-            const low = await getOrFetch(
-              `itad:historylow1y:${cc}:${itadId}`,
-              config.cacheTtl.itadPriceSec,
-              () => fetchItadHistoryLowRecent(itadId, cc),
-              { forceRefresh },
-            );
-            if (low) historyLowByItadId[itadId] = low;
-          } catch (err) {
-            logger.warn(`ITAD historylow fetch failed for id ${itadId}`, err);
-          }
-        },
-        () => incrementProgress(),
-      );
+      if (historyYears === 0) {
+        // All-time low has a dedicated batch endpoint (like the prices call above), unlike
+        // the windowed lookup below which only accepts one game id per call.
+        try {
+          historyLowByItadId = await getOrFetch(
+            `itad:historylowall:${cc}:${idsHash}`,
+            config.cacheTtl.itadPriceSec,
+            () => fetchItadHistoryLowAllTime(resolvedItadIds, cc),
+            { forceRefresh },
+          );
+        } catch (err) {
+          logger.warn("ITAD batch all-time-low fetch failed", err);
+          warnings.push("Could not fetch all-time low prices from ITAD");
+        }
+        resolvedItadIds.forEach(() => incrementProgress());
+      } else {
+        // history/v2 (unlike historylow/v1) only accepts one game id per call, so this is
+        // fetched per-game and cached per-game rather than batched like the prices call above.
+        await mapWithConcurrency(
+          resolvedItadIds,
+          CONCURRENCY,
+          async (itadId) => {
+            try {
+              const low = await getOrFetch(
+                `itad:historylow:${historyYears}y:${cc}:${itadId}`,
+                config.cacheTtl.itadPriceSec,
+                () => fetchItadHistoryLow(itadId, cc, historyYears),
+                { forceRefresh },
+              );
+              if (low) historyLowByItadId[itadId] = low;
+            } catch (err) {
+              logger.warn(`ITAD historylow fetch failed for id ${itadId}`, err);
+            }
+          },
+          () => incrementProgress(),
+        );
+      }
     }
 
     staleItems.forEach((item, index) => {
@@ -197,7 +219,7 @@ export async function getWishlistData(
         nextSaleEstimate: null, // populated by the stretch feature (M7), if built
       };
 
-      cacheSet(gameCacheKey(item.appid, cc), game, config.cacheTtl.gameSec);
+      cacheSet(gameCacheKey(item.appid, cc, historyYears), game, config.cacheTtl.gameSec);
       cachedGames.set(item.appid, game);
     });
   }
@@ -221,5 +243,6 @@ export async function getWishlistData(
     generatedAt: new Date().toISOString(),
     debugCapable,
     debugGameLimit: debugCapable ? (debugGameLimit ?? null) : undefined,
+    historyYears,
   };
 }

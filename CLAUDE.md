@@ -42,19 +42,26 @@ serves the static `public/` bundle otherwise. The route handler is a thin wrappe
 2. For each wishlist item not already cached, concurrently (via `mapWithConcurrency`, limit 5):
    - fetch its Steam store price (`services/steamStore.ts`)
    - look up its ITAD game UUID from the Steam appid (`services/itad.ts` `lookupItadId`)
-3. Batch-fetch current deals and all-time-low price from ITAD for all resolved ITAD ids in one
-   call each (`fetchItadPrices`, `fetchItadHistoryLow`) — not per-game, to conserve rate limit.
+3. Batch-fetch current deals from ITAD for all resolved ITAD ids in one call (`fetchItadPrices`).
+   The price-history-low fetch depends on the `historyYears` window (see below): a scoped window
+   (years >= 1) only accepts one game id per call, so it's fetched per-game via `fetchItadHistoryLow`
+   (`games/history/v2`, scoped with `since`); all-time (years === 0) has a dedicated batch endpoint,
+   `fetchItadHistoryLowAllTime` (`games/historylow/v1`), fetched once for every resolved id like
+   `fetchItadPrices` above. Note: `since` must be an ISO timestamp with no milliseconds component
+   or ITAD 400s it — omitting `since` entirely does *not* return full history (ITAD defaults to a
+   short recent window), so it can't be used to approximate all-time.
 4. Merge into `WishlistGame` objects (`src/types/wishlistItem.ts`), compute `isLowestEver` and
    `bestDealElsewhere`, sort by discount % desc then price asc, and return `WishlistResponse`.
 
 **Two independent layers of caching**, both against the same SQLite table
 (`data/cache.sqlite`, via `src/cache/db.ts` / `cacheStore.ts`):
 - Per-endpoint caches (wishlist list, Steam price, ITAD lookup, ITAD prices/historylow) — each
-  with its own TTL from `config.cacheTtl`.
+  with its own TTL from `config.cacheTtl`. The historylow caches are additionally keyed by
+  `historyYears`, since the same game has a different low price per window.
 - A **per-game 24h cache** (`CACHE_TTL_GAME_SEC`) of the fully-enriched `WishlistGame`, keyed by
-  `wishlist:game:{countryCode}:{appid}`. This is the layer that actually protects against
-  hitting Steam/ITAD rate limits — only games whose entry has expired trigger new upstream calls,
-  independent of anything else.
+  `wishlist:game:{countryCode}:{historyYears}y:{appid}`. This is the layer that actually protects
+  against hitting Steam/ITAD rate limits — only games whose entry has expired (for the requested
+  `historyYears`) trigger new upstream calls, independent of anything else.
 - `getOrFetch()` is the shared read-through-cache helper used everywhere; `forceRefresh` bypasses
   the *read* but always writes the fresh result back.
 
@@ -67,6 +74,10 @@ serves the static `public/` bundle otherwise. The route handler is a thin wrappe
 - `debug=0` / `limit=N` — only meaningful when `DEBUG_GAME_LIMIT` is set server-side
   (`debugCapable`); lets the client narrow or lift the server-configured cap on how many wishlist
   games get enriched, for fast local iteration on a large wishlist.
+- `years=N` — scopes the price-history-low lookback used for `historyLowPrice`/`isLowestEver`:
+  `1` = past year (default), `2` = past two years, etc.; `0` = all-time. Always available
+  (not gated behind `debugCapable`), though the UI control for it lives in the debug panel.
+  Echoed back as `historyYears` on the response so the client can reflect the active window.
 
 **Rate limiting:** Steam's storefront API and ITAD's API are each throttled independently via
 `createRateLimiter()` (`src/utils/concurrency.ts`), which spaces out calls to a shared resource

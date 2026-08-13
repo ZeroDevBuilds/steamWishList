@@ -22,7 +22,7 @@ export interface WishlistGame {
   discountPercent: number | null;
 
   itadStatus: ItadStatus;
-  /** Lowest price seen in the last 12 months (not all-time), per ITAD's history log. */
+  /** Lowest price seen within the response's `historyYears` window (0 = all-time), per ITAD's history log. */
   historyLowPrice: number | null;
   historyLowDate: string | null;
   isLowestEver: boolean | null;
@@ -40,4 +40,6 @@ export interface WishlistResponse {
   debugCapable: boolean;
   /** The limit applied to this response: a number, null when debug mode is capable but disabled, undefined when not debug-capable. */
   debugGameLimit?: number | null;
+  /** The price-history lookback window (in years) used for `historyLowPrice/isLowestEver`; 0 means all-time. */
+  historyYears: number;
 }
