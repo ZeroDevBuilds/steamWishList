@@ -244,6 +244,20 @@ main {
   z-index: 1;
 }
 
+.big-deal-badge {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  background: var(--accent);
+  color: #0d1116;
+  font-weight: 700;
+  font-size: 0.72rem;
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  z-index: 1;
+}
+
 .game-card img {
   width: 100%;
   display: block;
@@ -288,6 +302,18 @@ main {
   text-decoration: line-through;
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+.price-initial-low {
+  color: var(--discount-high);
+}
+
+.price-initial-medium {
+  color: var(--discount-medium);
+}
+
+.price-initial-high {
+  color: var(--discount-low);
 }
 
 .discount-badge {

@@ -51,16 +51,6 @@
           </button>
         </div>
       </div>
-      <div class="controls-row">
-        <label>
-          <input type="checkbox" id="filter-hide-unmatched" />
-          Hide ITAD-unmatched
-        </label>
-        <label>
-          <input type="checkbox" id="filter-potential-only" />
-          Potential purchases only
-        </label>
-      </div>
       <div id="debug-controls" class="controls-row debug-controls hidden">
         <label>
           <input type="checkbox" id="debug-toggle" />
@@ -76,6 +66,20 @@
         </label>
         <button id="debug-save-btn" type="button" title="Save these debug control values so they persist across reloads">Save</button>
         <span id="debug-save-status" class="debug-save-status" aria-live="polite"></span>
+      </div>
+      <div class="controls-row">
+        <label>
+          <input type="checkbox" id="filter-potential-only" />
+          Potential purchases only
+        </label>
+        <label>
+          <input type="checkbox" id="filter-big-deal-only" />
+          Big deals only
+        </label>
+        <label>
+          <input type="checkbox" id="filter-expensive-only" />
+          Expensive games only
+        </label>
       </div>
     </div>
   </header>

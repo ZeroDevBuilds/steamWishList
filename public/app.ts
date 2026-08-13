@@ -42,8 +42,9 @@ const listEl = document.getElementById("game-list") as HTMLDivElement;
 const sortSelect = document.getElementById("sort-select") as HTMLSelectElement;
 const viewCardsBtn = document.getElementById("view-cards-btn") as HTMLButtonElement;
 const viewListBtn = document.getElementById("view-list-btn") as HTMLButtonElement;
-const hideUnmatchedCheckbox = document.getElementById("filter-hide-unmatched") as HTMLInputElement;
 const potentialOnlyCheckbox = document.getElementById("filter-potential-only") as HTMLInputElement;
+const bigDealOnlyCheckbox = document.getElementById("filter-big-deal-only") as HTMLInputElement;
+const expensiveOnlyCheckbox = document.getElementById("filter-expensive-only") as HTMLInputElement;
 const searchInput = document.getElementById("filter-search") as HTMLInputElement;
 const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
 const forceRefreshBtn = document.getElementById("force-refresh-btn") as HTMLButtonElement;
@@ -133,11 +134,28 @@ function discountTier(discountPercent: number): "low" | "medium" | "high" {
   return "low";
 }
 
+function initialPriceTier(initialPrice: number): "low" | "medium" | "high" {
+  if (initialPrice >= 50) return "high";
+  if (initialPrice >= 30) return "medium";
+  return "low";
+}
+
+function isBigDeal(g: WishlistGame): boolean {
+  return (
+    g.initialPrice !== null &&
+    g.discountPercent !== null &&
+    initialPriceTier(g.initialPrice) === "high" &&
+    discountTier(g.discountPercent) !== "low"
+  );
+}
+
 function render() {
   const query = searchInput.value.trim().toLowerCase();
   let games = allGames.filter((g) => {
-    if (hideUnmatchedCheckbox.checked && g.itadStatus !== "ok") return false;
     if (potentialOnlyCheckbox.checked && g.isLowestEver !== true) return false;
+    if (bigDealOnlyCheckbox.checked && !isBigDeal(g)) return false;
+    if (expensiveOnlyCheckbox.checked && (g.initialPrice === null || initialPriceTier(g.initialPrice) !== "high"))
+      return false;
     if (query && !g.name.toLowerCase().includes(query)) return false;
     return true;
   });
@@ -176,7 +194,7 @@ function render() {
             <span class="price-current">${formatMoney(g.currentPrice, g.currency)}</span>
             ${
               g.initialPrice && g.discountPercent
-                ? `<span class="price-initial">${formatMoney(g.initialPrice, g.currency)}</span>`
+                ? `<span class="price-initial price-initial-${initialPriceTier(g.initialPrice)}">${formatMoney(g.initialPrice, g.currency)}</span>`
                 : ""
             }
           </div>`
@@ -204,9 +222,12 @@ function render() {
     const potentialPurchaseBadge =
       g.isLowestEver === true ? `<span class="potential-badge">Potential Purchase</span>` : "";
 
+    const bigDealBadge = isBigDeal(g) ? `<span class="big-deal-badge">Big Deal</span>` : "";
+
     card.innerHTML = `
       <a href="${g.storeUrl}" target="_blank" rel="noopener">
         ${potentialPurchaseBadge}
+        ${bigDealBadge}
         <img src="${g.headerImage}" alt="${g.name}" loading="lazy" />
       </a>
       <div class="body">
@@ -347,8 +368,9 @@ function setViewMode(mode: "cards" | "list"): void {
 sortSelect.addEventListener("change", render);
 viewCardsBtn.addEventListener("click", () => setViewMode("cards"));
 viewListBtn.addEventListener("click", () => setViewMode("list"));
-hideUnmatchedCheckbox.addEventListener("change", render);
 potentialOnlyCheckbox.addEventListener("change", render);
+bigDealOnlyCheckbox.addEventListener("change", render);
+expensiveOnlyCheckbox.addEventListener("change", render);
 searchInput.addEventListener("input", render);
 refreshBtn.addEventListener("click", () => load(true));
 forceRefreshBtn.addEventListener("click", () => load(true, true));
