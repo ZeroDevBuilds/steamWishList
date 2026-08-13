@@ -20,13 +20,6 @@
         </select>
       </label>
       <label>
-        View
-        <select id="view-select">
-          <option value="cards" selected>Cards</option>
-          <option value="list">List</option>
-        </select>
-      </label>
-      <label>
         <input type="checkbox" id="filter-hide-unmatched" />
         Hide ITAD-unmatched
       </label>
@@ -51,6 +44,26 @@
       </span>
       <button id="refresh-btn">Refresh</button>
       <button id="force-refresh-btn" title="Bypass the 24h cache and re-fetch every game from Steam/ITAD">Force Refresh</button>
+      <div class="view-toggle" role="group" aria-label="View">
+        <button type="button" id="view-cards-btn" class="view-toggle-btn active" aria-pressed="true" title="Card view">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="7" height="7" x="3" y="3" rx="1.5" />
+            <rect width="7" height="7" x="14" y="3" rx="1.5" />
+            <rect width="7" height="7" x="14" y="14" rx="1.5" />
+            <rect width="7" height="7" x="3" y="14" rx="1.5" />
+          </svg>
+        </button>
+        <button type="button" id="view-list-btn" class="view-toggle-btn" aria-pressed="false" title="List view">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 6h.01" />
+            <path d="M3 12h.01" />
+            <path d="M3 18h.01" />
+            <path d="M8 6h13" />
+            <path d="M8 12h13" />
+            <path d="M8 18h13" />
+          </svg>
+        </button>
+      </div>
     </div>
   </header>
 

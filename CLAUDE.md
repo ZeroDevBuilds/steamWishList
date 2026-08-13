@@ -122,7 +122,8 @@ sale-filter/negative-cache fixes for the incident this guards against).
 
 **Frontend:** `public/app.ts` (compiled to `app.js` via esbuild, no framework) fetches
 `/api/wishlist` and renders the game list plus the debug controls when `debugCapable` is true.
-Default sort is price ascending; a View select toggles between card and compact list layouts
-(`.list-view` class on `#game-list`, styled in `styles.css`). There is no client-side "on sale
+Default sort is price ascending; a View icon-button toggle (grid/list icons, rightmost in the
+controls bar) switches between card and compact list layouts (`.list-view` class on
+`#game-list`, styled in `styles.css`). There is no client-side "on sale
 only" filter — the server only ever returns on-sale games, per the pipeline above.
 `public/index.html` / `styles.css` are static, not templated server-side.

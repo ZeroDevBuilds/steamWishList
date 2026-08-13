@@ -40,7 +40,8 @@ const progressBarEl = document.getElementById("progress-bar") as HTMLDivElement;
 const progressBarFillEl = document.getElementById("progress-bar-fill") as HTMLDivElement;
 const listEl = document.getElementById("game-list") as HTMLDivElement;
 const sortSelect = document.getElementById("sort-select") as HTMLSelectElement;
-const viewSelect = document.getElementById("view-select") as HTMLSelectElement;
+const viewCardsBtn = document.getElementById("view-cards-btn") as HTMLButtonElement;
+const viewListBtn = document.getElementById("view-list-btn") as HTMLButtonElement;
 const hideUnmatchedCheckbox = document.getElementById("filter-hide-unmatched") as HTMLInputElement;
 const potentialOnlyCheckbox = document.getElementById("filter-potential-only") as HTMLInputElement;
 const searchInput = document.getElementById("filter-search") as HTMLInputElement;
@@ -55,6 +56,7 @@ let allGames: WishlistGame[] = [];
 let debugCapable = false;
 let debugInitialized = false;
 let historyYears = 1;
+let viewMode: "cards" | "list" = "cards";
 
 function historyWindowLabel(): string {
   if (historyYears === 0) return "all time";
@@ -119,7 +121,7 @@ function render() {
     }
   });
 
-  listEl.classList.toggle("list-view", viewSelect.value === "list");
+  listEl.classList.toggle("list-view", viewMode === "list");
 
   listEl.innerHTML = "";
   if (games.length === 0) {
@@ -283,8 +285,18 @@ async function load(forceRefresh = false, forceAll = false) {
   }
 }
 
+function setViewMode(mode: "cards" | "list"): void {
+  viewMode = mode;
+  viewCardsBtn.classList.toggle("active", mode === "cards");
+  viewCardsBtn.setAttribute("aria-pressed", String(mode === "cards"));
+  viewListBtn.classList.toggle("active", mode === "list");
+  viewListBtn.setAttribute("aria-pressed", String(mode === "list"));
+  render();
+}
+
 sortSelect.addEventListener("change", render);
-viewSelect.addEventListener("change", render);
+viewCardsBtn.addEventListener("click", () => setViewMode("cards"));
+viewListBtn.addEventListener("click", () => setViewMode("list"));
 hideUnmatchedCheckbox.addEventListener("change", render);
 potentialOnlyCheckbox.addEventListener("change", render);
 searchInput.addEventListener("input", render);

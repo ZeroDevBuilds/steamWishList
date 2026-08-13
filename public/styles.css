@@ -94,6 +94,38 @@ button:hover {
   filter: brightness(1.1);
 }
 
+.view-toggle {
+  display: flex;
+  border: 1px solid #3a4150;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-left: auto;
+}
+
+.view-toggle-btn {
+  background: var(--bg);
+  color: var(--muted);
+  border: none;
+  border-radius: 0;
+  padding: 0.4rem 0.6rem;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.view-toggle-btn + .view-toggle-btn {
+  border-left: 1px solid #3a4150;
+}
+
+.view-toggle-btn:hover {
+  color: var(--text);
+}
+
+.view-toggle-btn.active {
+  background: var(--accent);
+  color: #0d1116;
+}
+
 main {
   padding: 1.5rem 2rem;
 }
