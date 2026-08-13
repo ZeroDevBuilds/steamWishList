@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Steam Wishlist Tracker</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Steam Wishlist Tracker</h1>
+    <div class="controls">
+      <label>
+        Sort
+        <select id="sort-select">
+          <option value="discount">Discount % (high to low)</option>
+          <option value="price">Price (low to high)</option>
+          <option value="name">Name (A-Z)</option>
+          <option value="dateAdded">Date added (newest)</option>
+        </select>
+      </label>
+      <label>
+        <input type="checkbox" id="filter-on-sale" />
+        On sale only
+      </label>
+      <label>
+        <input type="checkbox" id="filter-hide-unmatched" />
+        Hide ITAD-unmatched
+      </label>
+      <input type="search" id="filter-search" placeholder="Search by name..." />
+      <button id="refresh-btn">Refresh</button>
+    </div>
+  </header>
+
+  <main id="content">
+    <p id="status" class="status">Loading wishlist…</p>
+    <div id="game-list" class="game-list"></div>
+  </main>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
