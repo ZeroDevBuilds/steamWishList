@@ -22,6 +22,7 @@ export interface WishlistGame {
   discountPercent: number | null;
 
   itadStatus: ItadStatus;
+  /** Lowest price seen in the last 12 months (not all-time), per ITAD's history log. */
   historyLowPrice: number | null;
   historyLowDate: string | null;
   isLowestEver: boolean | null;

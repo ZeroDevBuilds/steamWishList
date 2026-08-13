@@ -71,41 +71,41 @@ export async function fetchItadPrices(
   return result;
 }
 
-interface HistoryLowRawResponse {
-  id: string;
-  low?: {
-    shop: { id: number; name: string };
+// historylow/v1 returns the all-time low, which surfaces stale outlier sales from years ago
+// (e.g. a 2018 launch discount). We want "lowest in the recent past" instead, so we pull the
+// price-change log via history/v2 (scoped with `since`) and take the min ourselves.
+const HISTORY_LOOKBACK_DAYS = 365;
+
+interface HistoryRawEntry {
+  timestamp: string;
+  shop?: { id: number; name: string };
+  deal: {
     price: { amount: number; currency: string };
-    timestamp: string;
   };
 }
 
-/** All-time-low price per ITAD game id, keyed by ITAD id. Missing entry if ITAD has no history. */
-export async function fetchItadHistoryLow(
-  itadIds: string[],
+/** Lowest price seen for one ITAD game id within the last year, or null if none recorded. */
+export async function fetchItadHistoryLowRecent(
+  itadId: string,
   countryCode: string = config.countryCode,
-): Promise<Record<string, ItadHistoryLow>> {
-  const result: Record<string, ItadHistoryLow> = {};
-  if (itadIds.length === 0) return result;
-
+): Promise<ItadHistoryLow | null> {
   await throttle();
-  const url = new URL(`${BASE_URL}/games/historylow/v1`);
+  const since = new Date(Date.now() - HISTORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const url = new URL(`${BASE_URL}/games/history/v2`);
+  url.searchParams.set("id", itadId);
   url.searchParams.set("country", countryCode);
-  const raw = await fetchJson<HistoryLowRawResponse[]>(url.toString(), {
-    method: "POST",
-    headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify(itadIds),
+  url.searchParams.set("since", since);
+  const raw = await fetchJson<HistoryRawEntry[]>(url.toString(), {
+    headers: authHeaders(),
     retries: 3,
   });
 
-  for (const entry of raw) {
-    if (!entry.low) continue;
-    result[entry.id] = {
-      price: entry.low.price.amount,
-      currency: entry.low.price.currency,
-      shop: entry.low.shop?.name ?? null,
-      timestamp: entry.low.timestamp ?? null,
-    };
-  }
-  return result;
+  if (raw.length === 0) return null;
+  const lowest = raw.reduce((min, entry) => (entry.deal.price.amount < min.deal.price.amount ? entry : min));
+  return {
+    price: lowest.deal.price.amount,
+    currency: lowest.deal.price.currency,
+    shop: lowest.shop?.name ?? null,
+    timestamp: lowest.timestamp,
+  };
 }

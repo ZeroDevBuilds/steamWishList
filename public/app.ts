@@ -25,7 +25,17 @@ interface WishlistResponse {
   debugGameLimit?: number | null;
 }
 
+interface ProgressState {
+  active: boolean;
+  phase: string;
+  total: number;
+  completed: number;
+  startedAt: number | null;
+}
+
 const statusEl = document.getElementById("status") as HTMLParagraphElement;
+const progressBarEl = document.getElementById("progress-bar") as HTMLDivElement;
+const progressBarFillEl = document.getElementById("progress-bar-fill") as HTMLDivElement;
 const listEl = document.getElementById("game-list") as HTMLDivElement;
 const sortSelect = document.getElementById("sort-select") as HTMLSelectElement;
 const onSaleCheckbox = document.getElementById("filter-on-sale") as HTMLInputElement;
@@ -110,9 +120,9 @@ function render() {
     if (g.itadStatus !== "ok") {
       lowestBlock = `<p class="status-flag">No price-history match on ITAD</p>`;
     } else if (g.isLowestEver === true) {
-      lowestBlock = `<p class="lowest-ever">✓ Lowest price ever</p>`;
+      lowestBlock = `<p class="lowest-ever">✓ Lowest price in the past year</p>`;
     } else if (g.historyLowPrice !== null) {
-      lowestBlock = `<p class="not-lowest">Lowest ever: ${formatMoney(g.historyLowPrice, g.currency)} (${formatDate(g.historyLowDate)})</p>`;
+      lowestBlock = `<p class="not-lowest">Lowest in past year: ${formatMoney(g.historyLowPrice, g.currency)} (${formatDate(g.historyLowDate)})</p>`;
     }
 
     const elsewhereBlock = g.bestDealElsewhere
@@ -134,11 +144,58 @@ function render() {
   }
 }
 
+let progressPollHandle: ReturnType<typeof setInterval> | null = null;
+let progressPollActive = false;
+
+function stopProgressPolling() {
+  progressPollActive = false;
+  if (progressPollHandle !== null) {
+    clearInterval(progressPollHandle);
+    progressPollHandle = null;
+  }
+  progressBarEl.classList.add("hidden");
+  progressBarFillEl.classList.remove("indeterminate");
+}
+
+function renderProgress(progress: ProgressState) {
+  progressBarEl.classList.remove("hidden");
+  const elapsedSec = progress.startedAt ? Math.max(0, (Date.now() - progress.startedAt) / 1000) : 0;
+  const elapsedText = `${elapsedSec.toFixed(0)}s elapsed`;
+
+  if (progress.total > 0) {
+    progressBarFillEl.classList.remove("indeterminate");
+    const pct = Math.min(100, Math.round((progress.completed / progress.total) * 100));
+    progressBarFillEl.style.width = `${pct}%`;
+    statusEl.textContent = `${progress.phase} ${progress.completed}/${progress.total} (${pct}%) · ${elapsedText}`;
+  } else {
+    progressBarFillEl.classList.add("indeterminate");
+    progressBarFillEl.style.width = "";
+    statusEl.textContent = `${progress.phase} · ${elapsedText}`;
+  }
+}
+
+function startProgressPolling() {
+  stopProgressPolling();
+  progressPollActive = true;
+  progressPollHandle = setInterval(async () => {
+    try {
+      const res = await fetch("/api/wishlist/progress");
+      if (!progressPollActive || !res.ok) return;
+      const progress: ProgressState = await res.json();
+      if (!progressPollActive || !progress.active) return;
+      renderProgress(progress);
+    } catch {
+      // Ignore transient polling failures — the main request's own error handling covers real failures.
+    }
+  }, 400);
+}
+
 async function load(forceRefresh = false, forceAll = false) {
   statusEl.textContent = forceAll ? "Force refreshing every game…" : forceRefresh ? "Refreshing…" : "Loading wishlist…";
   statusEl.classList.remove("error");
   refreshBtn.disabled = true;
   forceRefreshBtn.disabled = true;
+  startProgressPolling();
   try {
     const params = new URLSearchParams();
     if (forceRefresh) params.set("refresh", "1");
@@ -177,6 +234,7 @@ async function load(forceRefresh = false, forceAll = false) {
     statusEl.textContent = `Failed to load wishlist: ${err instanceof Error ? err.message : String(err)}`;
     statusEl.classList.add("error");
   } finally {
+    stopProgressPolling();
     refreshBtn.disabled = false;
     forceRefreshBtn.disabled = false;
   }

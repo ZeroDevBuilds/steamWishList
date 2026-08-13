@@ -1,9 +1,14 @@
 import { Router } from "express";
 import { getWishlistData } from "../services/aggregate.js";
 import { fetchWishlistRaw } from "../services/steamWishlist.js";
+import { getProgress, finishProgress } from "../services/progress.js";
 import { logger } from "../utils/logger.js";
 
 export const wishlistRouter = Router();
+
+wishlistRouter.get("/wishlist/progress", (_req, res) => {
+  res.json(getProgress());
+});
 
 wishlistRouter.get("/wishlist", async (req, res) => {
   // force=1 (Force Refresh) implies refresh=1 and additionally bypasses the 24h per-game
@@ -26,6 +31,7 @@ wishlistRouter.get("/wishlist", async (req, res) => {
     const data = await getWishlistData({ forceRefresh, forceAllGames, debugGameLimit });
     res.json(data);
   } catch (err) {
+    finishProgress();
     logger.error("Failed to build wishlist response", err);
     res.status(502).json({ error: "Failed to fetch wishlist data. See server logs for details." });
   }

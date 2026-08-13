@@ -4,7 +4,8 @@ import { cacheGet, cacheSet, getOrFetch } from "../cache/cacheStore.js";
 import { mapWithConcurrency } from "../utils/concurrency.js";
 import { fetchWishlist } from "./steamWishlist.js";
 import { fetchSteamPrice } from "./steamStore.js";
-import { lookupItadId, fetchItadPrices, fetchItadHistoryLow } from "./itad.js";
+import { lookupItadId, fetchItadPrices, fetchItadHistoryLowRecent } from "./itad.js";
+import { startProgress, setProgressPhase, incrementProgress, finishProgress } from "./progress.js";
 import { logger } from "../utils/logger.js";
 import type { WishlistGame, WishlistResponse } from "../types/wishlistItem.js";
 import type { ItadDeal, ItadHistoryLow } from "../types/itad.js";
@@ -40,6 +41,7 @@ export async function getWishlistData(
     }
   }
 
+  startProgress("Fetching wishlist…");
   const fullWishlist = await getOrFetch(
     `steam:wishlist:${config.steamId64}`,
     config.cacheTtl.wishlistSec,
@@ -70,60 +72,84 @@ export async function getWishlistData(
   }
 
   if (staleItems.length > 0) {
+    setProgressPhase("Fetching prices & deals…", staleItems.length * 2);
     // Steam prices and ITAD lookups hit independent APIs (each internally throttled),
     // so run them concurrently rather than one after the other.
     const itadIdByAppid = new Map<number, string | null>();
     const [steamPrices] = await Promise.all([
-      mapWithConcurrency(staleItems, CONCURRENCY, (item) =>
-        getOrFetch(
-          `steam:price:${item.appid}:${cc}`,
-          config.cacheTtl.steamPriceSec,
-          () => fetchSteamPrice(item.appid, cc),
-          { forceRefresh },
-        ),
-      ),
-      mapWithConcurrency(staleItems, CONCURRENCY, async (item) => {
-        try {
-          const itadId = await getOrFetch(
-            `itad:lookup:${item.appid}`,
-            config.cacheTtl.itadLookupSec,
-            () => lookupItadId(item.appid),
+      mapWithConcurrency(
+        staleItems,
+        CONCURRENCY,
+        (item) =>
+          getOrFetch(
+            `steam:price:${item.appid}:${cc}`,
+            config.cacheTtl.steamPriceSec,
+            () => fetchSteamPrice(item.appid, cc),
             { forceRefresh },
-          );
-          itadIdByAppid.set(item.appid, itadId);
-        } catch (err) {
-          logger.warn(`ITAD lookup failed for appid ${item.appid}`, err);
-          warnings.push(`Could not look up ITAD data for appid ${item.appid}`);
-          itadIdByAppid.set(item.appid, null);
-        }
-      }),
+          ),
+        () => incrementProgress(),
+      ),
+      mapWithConcurrency(
+        staleItems,
+        CONCURRENCY,
+        async (item) => {
+          try {
+            const itadId = await getOrFetch(
+              `itad:lookup:${item.appid}`,
+              config.cacheTtl.itadLookupSec,
+              () => lookupItadId(item.appid),
+              { forceRefresh },
+            );
+            itadIdByAppid.set(item.appid, itadId);
+          } catch (err) {
+            logger.warn(`ITAD lookup failed for appid ${item.appid}`, err);
+            warnings.push(`Could not look up ITAD data for appid ${item.appid}`);
+            itadIdByAppid.set(item.appid, null);
+          }
+        },
+        () => incrementProgress(),
+      ),
     ]);
 
     const resolvedItadIds = [...new Set([...itadIdByAppid.values()].filter((id): id is string => id !== null))];
     const idsHash = hashIds(resolvedItadIds);
 
     let pricesByItadId: Record<string, ItadDeal[]> = {};
-    let historyLowByItadId: Record<string, ItadHistoryLow> = {};
+    const historyLowByItadId: Record<string, ItadHistoryLow> = {};
     if (resolvedItadIds.length > 0) {
+      setProgressPhase("Fetching deal details…", resolvedItadIds.length);
       try {
-        [pricesByItadId, historyLowByItadId] = await Promise.all([
-          getOrFetch(
-            `itad:prices:${cc}:${idsHash}`,
-            config.cacheTtl.itadPriceSec,
-            () => fetchItadPrices(resolvedItadIds, cc),
-            { forceRefresh },
-          ),
-          getOrFetch(
-            `itad:historylow:${cc}:${idsHash}`,
-            config.cacheTtl.itadPriceSec,
-            () => fetchItadHistoryLow(resolvedItadIds, cc),
-            { forceRefresh },
-          ),
-        ]);
+        pricesByItadId = await getOrFetch(
+          `itad:prices:${cc}:${idsHash}`,
+          config.cacheTtl.itadPriceSec,
+          () => fetchItadPrices(resolvedItadIds, cc),
+          { forceRefresh },
+        );
       } catch (err) {
-        logger.warn("ITAD batch price/historylow fetch failed", err);
-        warnings.push("Could not fetch current deals / historical lows from ITAD");
+        logger.warn("ITAD batch price fetch failed", err);
+        warnings.push("Could not fetch current deals from ITAD");
       }
+
+      // history/v2 (unlike historylow/v1) only accepts one game id per call, so this is
+      // fetched per-game and cached per-game rather than batched like the prices call above.
+      await mapWithConcurrency(
+        resolvedItadIds,
+        CONCURRENCY,
+        async (itadId) => {
+          try {
+            const low = await getOrFetch(
+              `itad:historylow1y:${cc}:${itadId}`,
+              config.cacheTtl.itadPriceSec,
+              () => fetchItadHistoryLowRecent(itadId, cc),
+              { forceRefresh },
+            );
+            if (low) historyLowByItadId[itadId] = low;
+          } catch (err) {
+            logger.warn(`ITAD historylow fetch failed for id ${itadId}`, err);
+          }
+        },
+        () => incrementProgress(),
+      );
     }
 
     staleItems.forEach((item, index) => {
@@ -186,6 +212,8 @@ export async function getWishlistData(
     const priceB = b.currentPrice ?? Number.POSITIVE_INFINITY;
     return priceA - priceB;
   });
+
+  finishProgress();
 
   return {
     games,

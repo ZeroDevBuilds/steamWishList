@@ -1,0 +1,81 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+A local Node/Express server that lists the user's Steam wishlist sorted by best current deal,
+flagging whether the current price is the lowest that game has ever been (via
+[IsThereAnyDeal](https://isthereanydeal.com)). Single-user, runs locally, backed by SQLite.
+
+## Commands
+
+- `npm run dev` — local dev server on http://127.0.0.1:3000 (builds the client once first, then
+  `tsx watch`s the server — auto-restarts on server-side changes).
+- `npm run dev:client` — run in a second terminal when actively editing `public/app.ts`; rebuilds
+  `public/app.js` on save via esbuild watch. The main `dev` server does not watch client files.
+- `npm run build` — compiles server (`tsc`) to `dist/` and bundles the client (`esbuild`).
+- `npm start` — runs the compiled build (`node dist/server.js`). Production entrypoint.
+
+No test suite and no lint script currently exist in this repo.
+
+### Setup
+
+Requires a `.env` (copy from `.env.example`): `STEAM_ID64` (wishlist must be public),
+`STEAM_API_KEY`, `ITAD_API_KEY`. See `.env.example` for all cache-TTL and debug env vars.
+
+### Verifying the Steam wishlist response shape
+
+Valve's `IWishlistService/GetWishlist/v1` response shape has changed before. Before trusting
+`/api/wishlist`, hit `GET /api/debug/wishlist-raw` and confirm the JSON matches what
+`src/services/steamWishlist.ts` expects (`response.items[].appid` etc.); adjust parsing there if
+not. This debug route is intentionally temporary.
+
+## Architecture
+
+**Request flow:** `src/server.ts` mounts `wishlistRouter` (`src/routes/wishlist.ts`) at `/api` and
+serves the static `public/` bundle otherwise. The route handler is a thin wrapper around
+`getWishlistData()` in `src/services/aggregate.ts`, which is the core of the app.
+
+**Aggregation pipeline** (`src/services/aggregate.ts`):
+1. Fetch the raw wishlist (list of appids) from Steam — `services/steamWishlist.ts`.
+2. For each wishlist item not already cached, concurrently (via `mapWithConcurrency`, limit 5):
+   - fetch its Steam store price (`services/steamStore.ts`)
+   - look up its ITAD game UUID from the Steam appid (`services/itad.ts` `lookupItadId`)
+3. Batch-fetch current deals and all-time-low price from ITAD for all resolved ITAD ids in one
+   call each (`fetchItadPrices`, `fetchItadHistoryLow`) — not per-game, to conserve rate limit.
+4. Merge into `WishlistGame` objects (`src/types/wishlistItem.ts`), compute `isLowestEver` and
+   `bestDealElsewhere`, sort by discount % desc then price asc, and return `WishlistResponse`.
+
+**Two independent layers of caching**, both against the same SQLite table
+(`data/cache.sqlite`, via `src/cache/db.ts` / `cacheStore.ts`):
+- Per-endpoint caches (wishlist list, Steam price, ITAD lookup, ITAD prices/historylow) — each
+  with its own TTL from `config.cacheTtl`.
+- A **per-game 24h cache** (`CACHE_TTL_GAME_SEC`) of the fully-enriched `WishlistGame`, keyed by
+  `wishlist:game:{countryCode}:{appid}`. This is the layer that actually protects against
+  hitting Steam/ITAD rate limits — only games whose entry has expired trigger new upstream calls,
+  independent of anything else.
+- `getOrFetch()` is the shared read-through-cache helper used everywhere; `forceRefresh` bypasses
+  the *read* but always writes the fresh result back.
+
+**Refresh semantics** (query params on `GET /api/wishlist`), all handled in `wishlist.ts` /
+`aggregate.ts` — don't conflate these:
+- `refresh=1` — bypasses the wishlist-list cache only; per-game data still comes from the 24h
+  cache if fresh.
+- `force=1` — implies `refresh=1` **and** bypasses the 24h per-game cache for every game (not
+  just stale ones), forcing a full re-fetch of price + ITAD data for the whole wishlist.
+- `debug=0` / `limit=N` — only meaningful when `DEBUG_GAME_LIMIT` is set server-side
+  (`debugCapable`); lets the client narrow or lift the server-configured cap on how many wishlist
+  games get enriched, for fast local iteration on a large wishlist.
+
+**Rate limiting:** Steam's storefront API and ITAD's API are each throttled independently via
+`createRateLimiter()` (`src/utils/concurrency.ts`), which spaces out calls to a shared resource
+to a minimum interval regardless of concurrent callers. `src/utils/http.ts`'s `fetchJson` adds
+retry-with-backoff on top (honors `Retry-After`, retries on 429/5xx). Steam's storefront endpoint
+in particular can 403 an IP after an unspaced burst (Akamai bot protection) — per-game price
+fetch failures are swallowed and surfaced as `priceStatus: "unavailable"` rather than failing the
+whole response.
+
+**Frontend:** `public/app.ts` (compiled to `app.js` via esbuild, no framework) fetches
+`/api/wishlist` and renders the game list plus the debug controls when `debugCapable` is true.
+`public/index.html` / `styles.css` are static, not templated server-side.
