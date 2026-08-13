@@ -16,11 +16,17 @@ function authHeaders(): Record<string, string> {
 
 interface LookupRawResponse {
   found: boolean;
-  game?: { id: string };
+  game?: { id: string; slug: string };
 }
 
-/** Maps a Steam appid to an ITAD game UUID, or null if ITAD has no match. */
-export async function lookupItadId(appid: number): Promise<string | null> {
+export interface ItadLookupResult {
+  id: string;
+  /** Public isthereanydeal.com page for this game, built from its slug. */
+  url: string;
+}
+
+/** Maps a Steam appid to an ITAD game UUID (+ its public page URL), or null if ITAD has no match. */
+export async function lookupItadId(appid: number): Promise<ItadLookupResult | null> {
   await throttle();
   const url = new URL(`${BASE_URL}/games/lookup/v1`);
   url.searchParams.set("appid", String(appid));
@@ -28,7 +34,8 @@ export async function lookupItadId(appid: number): Promise<string | null> {
     headers: authHeaders(),
     retries: 3,
   });
-  return raw.found && raw.game ? raw.game.id : null;
+  if (!raw.found || !raw.game) return null;
+  return { id: raw.game.id, url: `https://isthereanydeal.com/game/${raw.game.slug}/` };
 }
 
 interface PricesRawResponse {

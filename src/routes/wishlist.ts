@@ -16,8 +16,9 @@ wishlistRouter.get("/wishlist", async (req, res) => {
   // list cache and leaves fresh (<24h) per-game data untouched.
   const forceAllGames = req.query.force === "1";
   const forceRefresh = forceAllGames || req.query.refresh === "1";
-  // debug=0 explicitly disables the server-side game limit for this request (fetch everything).
-  // limit=N explicitly overrides it. Neither present falls back to the server default (undefined).
+  // debug=0 explicitly disables the server-side game limit for this request (fetch everything
+  // on sale). limit=N explicitly overrides it — applied to the on-sale-filtered wishlist, not
+  // the raw one. Neither present falls back to the server default (undefined).
   let debugGameLimit: number | null | undefined;
   if (req.query.debug === "0") {
     debugGameLimit = null;

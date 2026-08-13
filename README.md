@@ -1,8 +1,8 @@
 # Steam Wishlist Price Tracker
 
-Lists your Steam wishlist sorted by best current deal, and flags whether the
-current price is the lowest that game has ever been (via
-[IsThereAnyDeal](https://isthereanydeal.com)).
+Lists the games on your Steam wishlist that are currently on sale, sorted by
+lowest price, and flags whether the current price is the lowest that game has
+ever been (via [IsThereAnyDeal](https://isthereanydeal.com)).
 
 ## Setup
 

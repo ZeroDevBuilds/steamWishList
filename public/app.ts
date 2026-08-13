@@ -10,6 +10,7 @@ interface WishlistGame {
   initialPrice: number | null;
   discountPercent: number | null;
   itadStatus: "ok" | "unmatched" | "error";
+  itadUrl: string | null;
   historyLowPrice: number | null;
   historyLowDate: string | null;
   isLowestEver: boolean | null;
@@ -39,7 +40,7 @@ const progressBarEl = document.getElementById("progress-bar") as HTMLDivElement;
 const progressBarFillEl = document.getElementById("progress-bar-fill") as HTMLDivElement;
 const listEl = document.getElementById("game-list") as HTMLDivElement;
 const sortSelect = document.getElementById("sort-select") as HTMLSelectElement;
-const onSaleCheckbox = document.getElementById("filter-on-sale") as HTMLInputElement;
+const viewSelect = document.getElementById("view-select") as HTMLSelectElement;
 const hideUnmatchedCheckbox = document.getElementById("filter-hide-unmatched") as HTMLInputElement;
 const searchInput = document.getElementById("filter-search") as HTMLInputElement;
 const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
@@ -81,7 +82,6 @@ function formatDate(iso: string | null): string {
 function render() {
   const query = searchInput.value.trim().toLowerCase();
   let games = allGames.filter((g) => {
-    if (onSaleCheckbox.checked && !(g.discountPercent && g.discountPercent > 0)) return false;
     if (hideUnmatchedCheckbox.checked && g.itadStatus !== "ok") return false;
     if (query && !g.name.toLowerCase().includes(query)) return false;
     return true;
@@ -90,17 +90,19 @@ function render() {
   const sortBy = sortSelect.value;
   games = games.slice().sort((a, b) => {
     switch (sortBy) {
-      case "price":
-        return (a.currentPrice ?? Infinity) - (b.currentPrice ?? Infinity);
+      case "discount":
+        return (b.discountPercent ?? -1) - (a.discountPercent ?? -1);
       case "name":
         return a.name.localeCompare(b.name);
       case "dateAdded":
         return (b.dateAdded ?? 0) - (a.dateAdded ?? 0);
-      case "discount":
+      case "price":
       default:
-        return (b.discountPercent ?? -1) - (a.discountPercent ?? -1);
+        return (a.currentPrice ?? Infinity) - (b.currentPrice ?? Infinity);
     }
   });
+
+  listEl.classList.toggle("list-view", viewSelect.value === "list");
 
   listEl.innerHTML = "";
   if (games.length === 0) {
@@ -125,13 +127,19 @@ function render() {
           </div>`
         : `<p class="status-flag">Price unavailable</p>`;
 
+    const itadLink = g.itadUrl
+      ? ` <a class="itad-link" href="${g.itadUrl}" target="_blank" rel="noopener" title="View on IsThereAnyDeal" aria-label="View on IsThereAnyDeal"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></a>`
+      : "";
+
     let lowestBlock = "";
     if (g.itadStatus !== "ok") {
       lowestBlock = `<p class="status-flag">No price-history match on ITAD</p>`;
     } else if (g.isLowestEver === true) {
-      lowestBlock = `<p class="lowest-ever">✓ Lowest price in ${historyWindowLabel()}</p>`;
+      lowestBlock = `<p class="lowest-ever">✓ Lowest price in ${historyWindowLabel()}${itadLink}</p>`;
     } else if (g.historyLowPrice !== null) {
-      lowestBlock = `<p class="not-lowest">Lowest in ${historyWindowLabel()}: ${formatMoney(g.historyLowPrice, g.currency)} (${formatDate(g.historyLowDate)})</p>`;
+      lowestBlock = `<p class="not-lowest">Lowest in ${historyWindowLabel()}: ${formatMoney(g.historyLowPrice, g.currency)} (${formatDate(g.historyLowDate)})${itadLink}</p>`;
+    } else if (g.itadUrl) {
+      lowestBlock = `<p class="not-lowest">${itadLink}</p>`;
     }
 
     const elsewhereBlock = g.bestDealElsewhere
@@ -259,7 +267,7 @@ async function load(forceRefresh = false, forceAll = false) {
 }
 
 sortSelect.addEventListener("change", render);
-onSaleCheckbox.addEventListener("change", render);
+viewSelect.addEventListener("change", render);
 hideUnmatchedCheckbox.addEventListener("change", render);
 searchInput.addEventListener("input", render);
 refreshBtn.addEventListener("click", () => load(true));

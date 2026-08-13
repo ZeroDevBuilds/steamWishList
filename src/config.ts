@@ -40,6 +40,10 @@ export const config = {
   cacheTtl: {
     wishlistSec: intEnv("CACHE_TTL_WISHLIST_SEC", 21600),
     steamPriceSec: intEnv("CACHE_TTL_STEAM_PRICE_SEC", 3600),
+    /** Short negative-cache TTL for a *failed* Steam price fetch (e.g. Akamai 403) — long enough
+     *  that a retried page load doesn't immediately re-hammer Steam, short enough that it isn't
+     *  mistaken for a real "no price data" result for anywhere near the full price TTL. */
+    steamPriceFailureSec: intEnv("CACHE_TTL_STEAM_PRICE_FAILURE_SEC", 120),
     itadLookupSec: intEnv("CACHE_TTL_ITAD_LOOKUP_SEC", 2592000),
     itadPriceSec: intEnv("CACHE_TTL_ITAD_PRICE_SEC", 3600),
     /** How long a game's fully-enriched data (price + ITAD deal/history) is reused before re-fetching. */

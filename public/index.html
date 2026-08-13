@@ -13,15 +13,18 @@
       <label>
         Sort
         <select id="sort-select">
+          <option value="price" selected>Price (low to high)</option>
           <option value="discount">Discount % (high to low)</option>
-          <option value="price">Price (low to high)</option>
           <option value="name">Name (A-Z)</option>
           <option value="dateAdded">Date added (newest)</option>
         </select>
       </label>
       <label>
-        <input type="checkbox" id="filter-on-sale" />
-        On sale only
+        View
+        <select id="view-select">
+          <option value="cards" selected>Cards</option>
+          <option value="list">List</option>
+        </select>
       </label>
       <label>
         <input type="checkbox" id="filter-hide-unmatched" />

@@ -1,7 +1,6 @@
 import { config } from "../config.js";
 import { fetchJson } from "../utils/http.js";
 import { createRateLimiter } from "../utils/concurrency.js";
-import { logger } from "../utils/logger.js";
 import type { SteamPriceResult } from "../types/steam.js";
 
 // Steam's storefront API (unlike the official Web API) has no documented rate limit,
@@ -35,30 +34,29 @@ export async function fetchSteamPrice(
   url.searchParams.set("filters", "price_overview,basic");
 
   await throttle();
-  try {
-    const raw = await fetchJson<AppDetailsRawResponse>(url.toString(), { retries: 1 });
-    const entry = raw[String(appid)];
-    if (!entry?.success || !entry.data) {
-      return { appid, priceOverview: null };
-    }
-    const po = entry.data.price_overview;
-    return {
-      appid,
-      name: entry.data.name,
-      priceOverview: po
-        ? {
-            currency: po.currency,
-            initial: po.initial,
-            final: po.final,
-            discountPercent: po.discount_percent,
-          }
-        : null,
-    };
-  } catch (err) {
-    // Delisted app, region unavailable, or transient failure (including Steam's Akamai
-    // edge 403-blocking an IP after a burst) — treat as "no price data" rather than
-    // failing the whole pipeline for one game, but log it so a mass block is visible.
-    logger.warn(`Steam price fetch failed for appid ${appid}`, err);
+  // A delisted app or one with no price data in this region is a normal, cacheable API
+  // response (`success: false` / missing `data`) — return "no price" for that. A thrown
+  // error (network failure, Steam's Akamai edge 403-blocking an IP after a burst, etc.) is
+  // a *transient* failure and must propagate rather than being swallowed here: callers
+  // decide how to handle it, but critically must not cache it as if it were a real "no
+  // price" result — that would turn a few seconds of bad luck into an hour of every game
+  // looking delisted (the wishlist's real per-game cache TTL).
+  const raw = await fetchJson<AppDetailsRawResponse>(url.toString(), { retries: 1 });
+  const entry = raw[String(appid)];
+  if (!entry?.success || !entry.data) {
     return { appid, priceOverview: null };
   }
+  const po = entry.data.price_overview;
+  return {
+    appid,
+    name: entry.data.name,
+    priceOverview: po
+      ? {
+          currency: po.currency,
+          initial: po.initial,
+          final: po.final,
+          discountPercent: po.discount_percent,
+        }
+      : null,
+  };
 }

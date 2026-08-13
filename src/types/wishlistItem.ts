@@ -22,6 +22,8 @@ export interface WishlistGame {
   discountPercent: number | null;
 
   itadStatus: ItadStatus;
+  /** Public isthereanydeal.com page for this game, when ITAD has a match. */
+  itadUrl: string | null;
   /** Lowest price seen within the response's `historyYears` window (0 = all-time), per ITAD's history log. */
   historyLowPrice: number | null;
   historyLowDate: string | null;

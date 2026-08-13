@@ -7,6 +7,7 @@
   --accent: #66c0f4;
   --good: #6fcf97;
   --bad: #e57373;
+  --warn: #f2c94c;
 }
 
 * {
@@ -137,6 +138,40 @@ main {
   gap: 1rem;
 }
 
+.game-list.list-view {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.game-list.list-view .game-card {
+  flex-direction: row;
+  align-items: center;
+}
+
+.game-list.list-view .game-card img {
+  width: 140px;
+  aspect-ratio: 460 / 215;
+  flex-shrink: 0;
+}
+
+.game-list.list-view .game-card .body {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  padding: 0.5rem 1rem;
+  flex: 1;
+}
+
+.game-list.list-view .game-card h2 {
+  flex: 1 1 220px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .game-card {
   background: var(--panel);
   border-radius: 8px;
@@ -151,7 +186,7 @@ main {
   position: absolute;
   top: 0.5rem;
   left: 0.5rem;
-  background: var(--good);
+  background: var(--warn);
   color: #0d1116;
   font-weight: 700;
   font-size: 0.72rem;
@@ -234,5 +269,15 @@ main {
 
 .elsewhere {
   font-size: 0.8rem;
+  color: var(--accent);
+}
+
+.itad-link {
+  display: inline-flex;
+  color: var(--muted);
+  vertical-align: middle;
+}
+
+.itad-link:hover {
   color: var(--accent);
 }
