@@ -42,6 +42,7 @@ const listEl = document.getElementById("game-list") as HTMLDivElement;
 const sortSelect = document.getElementById("sort-select") as HTMLSelectElement;
 const viewSelect = document.getElementById("view-select") as HTMLSelectElement;
 const hideUnmatchedCheckbox = document.getElementById("filter-hide-unmatched") as HTMLInputElement;
+const potentialOnlyCheckbox = document.getElementById("filter-potential-only") as HTMLInputElement;
 const searchInput = document.getElementById("filter-search") as HTMLInputElement;
 const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
 const forceRefreshBtn = document.getElementById("force-refresh-btn") as HTMLButtonElement;
@@ -70,19 +71,35 @@ function formatMoney(amount: number | null, currency: string | null): string {
   }
 }
 
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
 function formatDate(iso: string | null): string {
   if (!iso) return "unknown date";
   try {
-    return new Date(iso).toLocaleDateString();
+    const d = new Date(iso);
+    return `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()}`;
   } catch {
     return iso;
   }
+}
+
+function formatTime(date: Date): string {
+  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+}
+
+function discountTier(discountPercent: number): "low" | "medium" | "high" {
+  if (discountPercent >= 70) return "high";
+  if (discountPercent >= 40) return "medium";
+  return "low";
 }
 
 function render() {
   const query = searchInput.value.trim().toLowerCase();
   let games = allGames.filter((g) => {
     if (hideUnmatchedCheckbox.checked && g.itadStatus !== "ok") return false;
+    if (potentialOnlyCheckbox.checked && g.isLowestEver !== true) return false;
     if (query && !g.name.toLowerCase().includes(query)) return false;
     return true;
   });
@@ -117,7 +134,7 @@ function render() {
     const priceBlock =
       g.priceStatus === "ok"
         ? `<div class="price-row">
-            ${g.discountPercent ? `<span class="discount-badge">-${g.discountPercent}%</span>` : ""}
+            ${g.discountPercent ? `<span class="discount-badge discount-${discountTier(g.discountPercent)}">-${g.discountPercent}%</span>` : ""}
             <span class="price-current">${formatMoney(g.currentPrice, g.currency)}</span>
             ${
               g.initialPrice && g.discountPercent
@@ -254,7 +271,7 @@ async function load(forceRefresh = false, forceAll = false) {
 
     const warningText = data.warnings.length ? ` (${data.warnings.length} warning(s) — see console)` : "";
     if (data.warnings.length) console.warn("Wishlist warnings:", data.warnings);
-    statusEl.textContent = `${data.games.length} games · updated ${new Date(data.generatedAt).toLocaleTimeString()}${warningText}`;
+    statusEl.textContent = `${data.games.length} games · updated ${formatTime(new Date(data.generatedAt))}${warningText}`;
     render();
   } catch (err) {
     statusEl.textContent = `Failed to load wishlist: ${err instanceof Error ? err.message : String(err)}`;
@@ -269,6 +286,7 @@ async function load(forceRefresh = false, forceAll = false) {
 sortSelect.addEventListener("change", render);
 viewSelect.addEventListener("change", render);
 hideUnmatchedCheckbox.addEventListener("change", render);
+potentialOnlyCheckbox.addEventListener("change", render);
 searchInput.addEventListener("input", render);
 refreshBtn.addEventListener("click", () => load(true));
 forceRefreshBtn.addEventListener("click", () => load(true, true));

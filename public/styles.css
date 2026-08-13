@@ -8,6 +8,9 @@
   --good: #6fcf97;
   --bad: #e57373;
   --warn: #f2c94c;
+  --discount-low: #e57373;
+  --discount-medium: #f2994a;
+  --discount-high: #6fcf97;
 }
 
 * {
@@ -243,12 +246,23 @@ main {
 }
 
 .discount-badge {
-  background: var(--good);
   color: #0d1116;
   font-weight: 700;
   border-radius: 4px;
   padding: 0.1rem 0.4rem;
   font-size: 0.85rem;
+}
+
+.discount-badge.discount-low {
+  background: var(--discount-low);
+}
+
+.discount-badge.discount-medium {
+  background: var(--discount-medium);
+}
+
+.discount-badge.discount-high {
+  background: var(--discount-high);
 }
 
 .lowest-ever {
