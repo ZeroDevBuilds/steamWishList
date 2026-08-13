@@ -37,6 +37,9 @@ export const config = {
   host: optionalEnv("HOST", "127.0.0.1"),
   /** Debug-only: caps how many wishlist games get price/ITAD enrichment. Unset = no limit. */
   debugGameLimit: optionalIntEnv("DEBUG_GAME_LIMIT"),
+  /** Minimum spacing between Steam storefront price requests — shared across all concurrent
+   *  callers. Raise this if Steam starts 429ing (Akamai bot protection). */
+  steamPriceThrottleMs: intEnv("STEAM_PRICE_THROTTLE_MS", 1000),
   cacheTtl: {
     wishlistSec: intEnv("CACHE_TTL_WISHLIST_SEC", 21600),
     steamPriceSec: intEnv("CACHE_TTL_STEAM_PRICE_SEC", 3600),

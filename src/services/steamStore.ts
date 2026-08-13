@@ -7,7 +7,7 @@ import type { SteamPriceResult } from "../types/steam.js";
 // but it's fronted by Akamai bot-protection that will 403 an IP outright after a burst
 // of requests with no spacing — seen in practice when polling a large wishlist with no
 // delay between calls. Space requests out to stay well under whatever that threshold is.
-const throttle = createRateLimiter(400);
+const throttle = createRateLimiter(config.steamPriceThrottleMs);
 
 interface AppDetailsRawResponse {
   [appid: string]: {

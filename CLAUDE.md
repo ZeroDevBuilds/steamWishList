@@ -109,7 +109,10 @@ retry-with-backoff on top, but only for 429/5xx — a 403 is treated as non-retr
 immediately. Steam's storefront endpoint in particular can 403 an entire IP after an unspaced
 burst (Akamai bot protection); because step 2 of the aggregation pipeline sweeps the *full*
 wishlist every time its cache goes cold, this is a real, recurring risk (not just theoretical —
-it has tripped in practice on a ~300-game wishlist). `fetchSteamPrice` (`services/steamStore.ts`)
+it has tripped in practice on a ~300-game wishlist). The spacing between Steam storefront calls
+is tunable via `STEAM_PRICE_THROTTLE_MS` (`config.steamPriceThrottleMs`, default 1000ms, shared
+across all `CONCURRENCY` workers in `aggregate.ts`) — raise it if 429s persist at the default.
+`fetchSteamPrice` (`services/steamStore.ts`)
 lets such failures propagate rather than swallowing them; `getWishlistData` catches them per-game,
 excludes that game from the response for this request (it's simply missing from the on-sale
 count, not shown as "unavailable"), and negative-caches the failure for a short TTL
