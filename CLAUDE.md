@@ -127,3 +127,13 @@ controls bar) switches between card and compact list layouts (`.list-view` class
 `#game-list`, styled in `styles.css`). There is no client-side "on sale
 only" filter — the server only ever returns on-sale games, per the pipeline above.
 `public/index.html` / `styles.css` are static, not templated server-side.
+
+The controls bar (`.controls`) stacks three rows (`.controls-row`): sort/search/refresh/view-toggle,
+then the ITAD/potential-purchase filter checkboxes, then the debug panel. Refresh is an icon-only
+button (`.icon-btn`); Force Refresh stays a labeled text button since it's the higher-stakes action.
+Debug control values (debug mode, game limit, history years) are persisted to `localStorage`
+(`wishlist:debugControls`) only when the **Save** button in the debug row is clicked — not on every
+change — and are restored from there (instead of from the server's `debugGameLimit`/`historyYears`
+defaults) on subsequent loads, including real browser reloads, via `loadSavedDebugControls()` /
+`pendingDebugReload` in `app.ts`. Dates (`formatDate`) render as `d MMM yyyy` (e.g. `13 Aug 2026`),
+not a numeric format.

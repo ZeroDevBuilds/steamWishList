@@ -51,10 +51,44 @@ const debugControls = document.getElementById("debug-controls") as HTMLElement;
 const debugToggle = document.getElementById("debug-toggle") as HTMLInputElement;
 const debugLimitInput = document.getElementById("debug-limit-input") as HTMLInputElement;
 const debugYearsInput = document.getElementById("debug-years-input") as HTMLInputElement;
+const debugSaveBtn = document.getElementById("debug-save-btn") as HTMLButtonElement;
+const debugSaveStatus = document.getElementById("debug-save-status") as HTMLSpanElement;
+
+const DEBUG_STORAGE_KEY = "wishlist:debugControls";
+
+interface SavedDebugControls {
+  enabled: boolean;
+  limit: string;
+  years: string;
+}
+
+function loadSavedDebugControls(): SavedDebugControls | null {
+  try {
+    const raw = localStorage.getItem(DEBUG_STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as SavedDebugControls;
+  } catch {
+    return null;
+  }
+}
+
+function saveDebugControls(): void {
+  const data: SavedDebugControls = {
+    enabled: debugToggle.checked,
+    limit: debugLimitInput.value,
+    years: debugYearsInput.value,
+  };
+  localStorage.setItem(DEBUG_STORAGE_KEY, JSON.stringify(data));
+  debugSaveStatus.textContent = "Saved";
+  window.setTimeout(() => {
+    debugSaveStatus.textContent = "";
+  }, 2000);
+}
 
 let allGames: WishlistGame[] = [];
 let debugCapable = false;
 let debugInitialized = false;
+let pendingDebugReload = false;
 let historyYears = 1;
 let viewMode: "cards" | "list" = "cards";
 
@@ -77,11 +111,13 @@ function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
 function formatDate(iso: string | null): string {
   if (!iso) return "unknown date";
   try {
     const d = new Date(iso);
-    return `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()}`;
+    return `${pad2(d.getDate())} ${SHORT_MONTHS[d.getMonth()]} ${d.getFullYear()}`;
   } catch {
     return iso;
   }
@@ -262,12 +298,20 @@ async function load(forceRefresh = false, forceAll = false) {
     debugCapable = data.debugCapable;
     debugControls.classList.toggle("hidden", !debugCapable);
     if (debugCapable && !debugInitialized) {
-      debugToggle.checked = data.debugGameLimit !== null && data.debugGameLimit !== undefined;
-      debugLimitInput.disabled = !debugToggle.checked;
-      if (data.debugGameLimit !== null && data.debugGameLimit !== undefined) {
-        debugLimitInput.value = String(data.debugGameLimit);
+      const saved = loadSavedDebugControls();
+      if (saved) {
+        debugToggle.checked = saved.enabled;
+        debugLimitInput.value = saved.limit;
+        debugYearsInput.value = saved.years;
+        pendingDebugReload = true;
+      } else {
+        debugToggle.checked = data.debugGameLimit !== null && data.debugGameLimit !== undefined;
+        if (data.debugGameLimit !== null && data.debugGameLimit !== undefined) {
+          debugLimitInput.value = String(data.debugGameLimit);
+        }
+        debugYearsInput.value = String(data.historyYears);
       }
-      debugYearsInput.value = String(data.historyYears);
+      debugLimitInput.disabled = !debugToggle.checked;
       debugInitialized = true;
     }
 
@@ -275,6 +319,12 @@ async function load(forceRefresh = false, forceAll = false) {
     if (data.warnings.length) console.warn("Wishlist warnings:", data.warnings);
     statusEl.textContent = `${data.games.length} games · updated ${formatTime(new Date(data.generatedAt))}${warningText}`;
     render();
+
+    if (pendingDebugReload) {
+      pendingDebugReload = false;
+      await load();
+      return;
+    }
   } catch (err) {
     statusEl.textContent = `Failed to load wishlist: ${err instanceof Error ? err.message : String(err)}`;
     statusEl.classList.add("error");
@@ -306,5 +356,6 @@ debugToggle.addEventListener("change", () => {
   debugLimitInput.disabled = !debugToggle.checked;
 });
 debugYearsInput.addEventListener("change", () => load());
+debugSaveBtn.addEventListener("click", saveDebugControls);
 
 load();
