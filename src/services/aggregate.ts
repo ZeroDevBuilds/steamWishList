@@ -21,38 +21,46 @@ export async function getWishlistData(options: { forceRefresh?: boolean } = {}):
   const cc = config.countryCode;
   const warnings: string[] = [];
 
-  const wishlist = await getOrFetch(
+  const fullWishlist = await getOrFetch(
     `steam:wishlist:${config.steamId64}`,
     config.cacheTtl.wishlistSec,
     fetchWishlist,
     { forceRefresh },
   );
+  const wishlist =
+    config.debugGameLimit !== undefined ? fullWishlist.slice(0, config.debugGameLimit) : fullWishlist;
+  if (config.debugGameLimit !== undefined) {
+    logger.info(`DEBUG_GAME_LIMIT set — enriching only ${wishlist.length} of ${fullWishlist.length} wishlist games`);
+  }
 
-  const steamPrices = await mapWithConcurrency(wishlist, CONCURRENCY, (item) =>
-    getOrFetch(
-      `steam:price:${item.appid}:${cc}`,
-      config.cacheTtl.steamPriceSec,
-      () => fetchSteamPrice(item.appid, cc),
-      { forceRefresh },
-    ),
-  );
-
+  // Steam prices and ITAD lookups hit independent APIs (each internally throttled),
+  // so run them concurrently rather than one after the other.
   const itadIdByAppid = new Map<number, string | null>();
-  await mapWithConcurrency(wishlist, CONCURRENCY, async (item) => {
-    try {
-      const itadId = await getOrFetch(
-        `itad:lookup:${item.appid}`,
-        config.cacheTtl.itadLookupSec,
-        () => lookupItadId(item.appid),
+  const [steamPrices] = await Promise.all([
+    mapWithConcurrency(wishlist, CONCURRENCY, (item) =>
+      getOrFetch(
+        `steam:price:${item.appid}:${cc}`,
+        config.cacheTtl.steamPriceSec,
+        () => fetchSteamPrice(item.appid, cc),
         { forceRefresh },
-      );
-      itadIdByAppid.set(item.appid, itadId);
-    } catch (err) {
-      logger.warn(`ITAD lookup failed for appid ${item.appid}`, err);
-      warnings.push(`Could not look up ITAD data for appid ${item.appid}`);
-      itadIdByAppid.set(item.appid, null);
-    }
-  });
+      ),
+    ),
+    mapWithConcurrency(wishlist, CONCURRENCY, async (item) => {
+      try {
+        const itadId = await getOrFetch(
+          `itad:lookup:${item.appid}`,
+          config.cacheTtl.itadLookupSec,
+          () => lookupItadId(item.appid),
+          { forceRefresh },
+        );
+        itadIdByAppid.set(item.appid, itadId);
+      } catch (err) {
+        logger.warn(`ITAD lookup failed for appid ${item.appid}`, err);
+        warnings.push(`Could not look up ITAD data for appid ${item.appid}`);
+        itadIdByAppid.set(item.appid, null);
+      }
+    }),
+  ]);
 
   const resolvedItadIds = [...new Set([...itadIdByAppid.values()].filter((id): id is string => id !== null))];
   const idsHash = hashIds(resolvedItadIds);

@@ -21,6 +21,13 @@ function intEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function optionalIntEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 export const config = {
   steamId64: requireEnv("STEAM_ID64"),
   steamApiKey: process.env.STEAM_API_KEY ?? "",
@@ -28,6 +35,8 @@ export const config = {
   countryCode: optionalEnv("COUNTRY_CODE", "us"),
   port: intEnv("PORT", 3000),
   host: optionalEnv("HOST", "127.0.0.1"),
+  /** Debug-only: caps how many wishlist games get price/ITAD enrichment. Unset = no limit. */
+  debugGameLimit: optionalIntEnv("DEBUG_GAME_LIMIT"),
   cacheTtl: {
     wishlistSec: intEnv("CACHE_TTL_WISHLIST_SEC", 21600),
     steamPriceSec: intEnv("CACHE_TTL_STEAM_PRICE_SEC", 3600),
