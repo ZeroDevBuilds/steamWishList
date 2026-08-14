@@ -127,6 +127,7 @@ export async function getWishlistData(
     logger.info(`Force refresh — bypassing the 24h game cache for all ${wishlist.length} wishlist games`);
   }
 
+  let itadLookupFailures = 0;
   if (staleItems.length > 0) {
     setProgressPhase("Fetching deals…", staleItems.length);
     // Steam prices were already fetched above (to determine sale status); only the ITAD
@@ -147,6 +148,7 @@ export async function getWishlistData(
         } catch (err) {
           logger.warn(`ITAD lookup failed for appid ${item.appid}`, err);
           warnings.push(`Could not look up ITAD data for appid ${item.appid}`);
+          itadLookupFailures++;
           itadLookupByAppid.set(item.appid, null);
         }
       },
@@ -277,6 +279,14 @@ export async function getWishlistData(
   });
 
   finishProgress();
+
+  const steamPriceSuccesses = fullWishlist.length - steamPriceFailures;
+  const itadLookupSuccesses = staleItems.length - itadLookupFailures;
+  logger.info(
+    `Wishlist refresh complete: ${games.length} on-sale game(s) returned — ` +
+      `Steam prices: ${steamPriceSuccesses}/${fullWishlist.length} ok (${steamPriceFailures} failed); ` +
+      `ITAD lookups: ${itadLookupSuccesses}/${staleItems.length} ok (${itadLookupFailures} failed)`,
+  );
 
   return {
     games,
