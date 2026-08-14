@@ -352,9 +352,108 @@ main {
   font-size: 0.8rem;
 }
 
-.elsewhere {
-  font-size: 0.8rem;
-  color: var(--accent);
+.sale-trend {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.1rem;
+}
+
+.sale-trend-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.sale-trend-dir {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.sale-trend-dir.deeper {
+  color: var(--good);
+}
+
+.sale-trend-dir.shallower {
+  color: var(--discount-low);
+}
+
+.sale-trend-dir.flat {
+  color: var(--muted);
+}
+
+.trend-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+}
+
+/* 2px line, round join/cap — the only loud thing in the figure. */
+.trend-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+/* A wash, not a saturated block. */
+.trend-area {
+  fill: var(--accent);
+  opacity: 0.1;
+  stroke: none;
+}
+
+/* The end marker carries a 2px ring in the surface colour so it stays legible where it
+   sits on the line. */
+.trend-dot {
+  fill: var(--accent);
+  stroke: var(--panel);
+  stroke-width: 2;
+}
+
+/* Context, not data: hairline, solid, recessive. */
+.trend-ref {
+  stroke: var(--muted);
+  stroke-width: 1;
+  opacity: 0.45;
+}
+
+/* Text never wears the series colour. */
+.trend-axis {
+  fill: var(--muted);
+  font-size: 9px;
+}
+
+.trend-hit {
+  fill: transparent;
+}
+
+.trend-hit:hover {
+  fill: rgba(255, 255, 255, 0.06);
+}
+
+.sale-trend-empty {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* The compact list view lays the card body out as a row, so the chart takes its own
+   full-width line beneath the other columns and is capped so it can't dominate the row. */
+.game-list.list-view .sale-trend {
+  flex: 1 1 100%;
+}
+
+.game-list.list-view .trend-chart {
+  max-width: 340px;
 }
 
 .itad-link {

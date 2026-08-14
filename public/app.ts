@@ -1,3 +1,19 @@
+interface PricePoint {
+  /** Epoch ms. */
+  t: number;
+  price: number;
+  cut: number;
+}
+
+interface SaleEpisode {
+  startDate: string;
+  /** null when the sale is still running. */
+  endDate: string | null;
+  price: number;
+  cut: number;
+  currency: string;
+}
+
 interface WishlistGame {
   appid: number;
   name: string;
@@ -14,7 +30,10 @@ interface WishlistGame {
   historyLowPrice: number | null;
   historyLowDate: string | null;
   isLowestEver: boolean | null;
-  bestDealElsewhere: { shop: string; price: number } | null;
+  /** Up to SALE_EPISODE_LIMIT recent Steam sales, newest first; sliced to taste client-side. */
+  recentSales: SaleEpisode[];
+  /** Price timeline spanning `recentSales`, oldest first — the trend chart's data. */
+  pricePoints: PricePoint[];
   nextSaleEstimate: { label: string; confidence: "low" } | null;
 }
 
@@ -46,6 +65,8 @@ const potentialOnlyCheckbox = document.getElementById("filter-potential-only") a
 const bigDealOnlyCheckbox = document.getElementById("filter-big-deal-only") as HTMLInputElement;
 const expensiveOnlyCheckbox = document.getElementById("filter-expensive-only") as HTMLInputElement;
 const searchInput = document.getElementById("filter-search") as HTMLInputElement;
+const trendToggle = document.getElementById("trend-toggle") as HTMLInputElement;
+const trendCountInput = document.getElementById("trend-count-input") as HTMLInputElement;
 const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
 const forceRefreshBtn = document.getElementById("force-refresh-btn") as HTMLButtonElement;
 const debugControls = document.getElementById("debug-controls") as HTMLElement;
@@ -84,6 +105,49 @@ function saveDebugControls(): void {
   window.setTimeout(() => {
     debugSaveStatus.textContent = "";
   }, 2000);
+}
+
+const TREND_STORAGE_KEY = "wishlist:saleTrend";
+const TREND_COUNT_MIN = 1;
+const TREND_COUNT_MAX = 10; // must not exceed the server's SALE_EPISODE_LIMIT
+const TREND_COUNT_DEFAULT = 3;
+
+interface SavedTrendControls {
+  enabled: boolean;
+  count: number;
+}
+
+/**
+ * The trend controls are pure display state: the server always sends up to SALE_EPISODE_LIMIT
+ * episodes, so toggling the trend or changing the count re-renders from data already in hand —
+ * no refetch, and the count never becomes a cache-key dimension server-side.
+ */
+function loadTrendControls(): void {
+  let saved: SavedTrendControls | null = null;
+  try {
+    const raw = localStorage.getItem(TREND_STORAGE_KEY);
+    if (raw) saved = JSON.parse(raw) as SavedTrendControls;
+  } catch {
+    saved = null;
+  }
+  trendToggle.checked = saved?.enabled ?? false;
+  trendCountInput.value = String(saved?.count ?? TREND_COUNT_DEFAULT);
+  trendCountInput.disabled = !trendToggle.checked;
+}
+
+function saveTrendControls(): void {
+  const data: SavedTrendControls = { enabled: trendToggle.checked, count: trendCount() };
+  try {
+    localStorage.setItem(TREND_STORAGE_KEY, JSON.stringify(data));
+  } catch {
+    // Storage unavailable (private mode / quota) — the controls still work for this session.
+  }
+}
+
+function trendCount(): number {
+  const parsed = Number.parseInt(trendCountInput.value, 10);
+  if (!Number.isFinite(parsed)) return TREND_COUNT_DEFAULT;
+  return Math.min(TREND_COUNT_MAX, Math.max(TREND_COUNT_MIN, parsed));
 }
 
 let allGames: WishlistGame[] = [];
@@ -138,6 +202,133 @@ function initialPriceTier(initialPrice: number): "low" | "medium" | "high" {
   if (initialPrice >= 50) return "high";
   if (initialPrice >= 30) return "medium";
   return "low";
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+/**
+ * Direction of travel across the shown sales — are Steam's discounts on this game getting
+ * deeper or shallower over time? That's the actual question the trend answers ("is this a
+ * good moment, or will it get better?"), so it's worth stating rather than leaving the
+ * reader to diff the percentages.
+ */
+function trendDirection(sales: SaleEpisode[]): string {
+  if (sales.length < 2) return "";
+  const newest = sales[0].cut;
+  const oldest = sales[sales.length - 1].cut;
+  if (newest > oldest) return `<span class="sale-trend-dir deeper" title="Discounts getting deeper">▲ deeper</span>`;
+  if (newest < oldest)
+    return `<span class="sale-trend-dir shallower" title="Discounts getting shallower">▼ shallower</span>`;
+  return `<span class="sale-trend-dir flat" title="Discount depth unchanged">= flat</span>`;
+}
+
+// Chart geometry, in viewBox units. The SVG scales to the card width via CSS, so these are
+// proportions rather than pixels — the left gutter holds the two price labels, the bottom
+// strip the two date labels.
+const CHART_W = 300;
+const CHART_H = 78;
+const CHART_PAD = { left: 40, right: 10, top: 10, bottom: 22 };
+
+/** The points needed to draw from `start` onward, including the reading in effect at `start`. */
+function pointsFrom(points: PricePoint[], start: number): PricePoint[] {
+  if (points.length === 0) return [];
+  let anchor = 0;
+  for (let i = 0; i < points.length; i++) {
+    if (points[i].t <= start) anchor = i;
+    else break;
+  }
+  return points.slice(anchor);
+}
+
+/**
+ * Step chart of the Steam price over the span of the shown sales.
+ *
+ * A *step* line, not a straight one: the price holds flat until the next change and then jumps,
+ * so interpolating between points would draw prices that never existed — and would hide that
+ * the price returns to full between sales, which is the whole shape worth seeing.
+ */
+function renderSaleTrend(g: WishlistGame): string {
+  if (!trendToggle.checked || g.itadStatus !== "ok") return "";
+  const sales = g.recentSales.slice(0, trendCount());
+  if (sales.length === 0) {
+    return `<p class="sale-trend-empty">No recorded Steam sales</p>`;
+  }
+
+  const now = Date.now();
+  const windowStart = new Date(sales[sales.length - 1].startDate).getTime();
+  const points = pointsFrom(g.pricePoints, windowStart);
+  if (points.length === 0) {
+    return `<p class="sale-trend-empty">No price history</p>`;
+  }
+  // Close the line at "now" using Steam's live price, so the chart's right edge agrees with the
+  // price printed on the card even when ITAD's log hasn't caught up to the current sale yet.
+  const series = [...points, { t: now, price: g.currentPrice ?? points[points.length - 1].price, cut: 0 }];
+
+  const prices = series.map((p) => p.price);
+  let lo = Math.min(...prices);
+  let hi = Math.max(...prices);
+  if (hi - lo < 0.01) {
+    // Price never moved in this span — centre the flat line instead of dividing by zero.
+    lo -= 1;
+    hi += 1;
+  }
+  const plotW = CHART_W - CHART_PAD.left - CHART_PAD.right;
+  const plotH = CHART_H - CHART_PAD.top - CHART_PAD.bottom;
+  const spanMs = Math.max(1, now - windowStart);
+  const xOf = (t: number) =>
+    CHART_PAD.left + (Math.min(Math.max(t, windowStart), now) - windowStart) / spanMs * plotW;
+  const yOf = (price: number) => CHART_PAD.top + ((hi - price) / (hi - lo)) * plotH;
+  const round = (n: number) => Math.round(n * 10) / 10;
+
+  let path = `M ${round(xOf(series[0].t))} ${round(yOf(series[0].price))}`;
+  for (let i = 1; i < series.length; i++) {
+    // Horizontal to the moment of change at the *old* price, then vertical to the new one.
+    path += ` L ${round(xOf(series[i].t))} ${round(yOf(series[i - 1].price))}`;
+    path += ` L ${round(xOf(series[i].t))} ${round(yOf(series[i].price))}`;
+  }
+  const baseline = CHART_PAD.top + plotH;
+  const area = `${path} L ${round(xOf(now))} ${baseline} L ${round(xOf(series[0].t))} ${baseline} Z`;
+
+  // The bar the current price has to beat. Drawn recessive (a hairline in the muted ink), since
+  // it's context for the data rather than data itself.
+  const refLine =
+    g.historyLowPrice !== null && g.historyLowPrice >= lo && g.historyLowPrice <= hi
+      ? `<line class="trend-ref" x1="${CHART_PAD.left}" x2="${CHART_W - CHART_PAD.right}"
+           y1="${round(yOf(g.historyLowPrice))}" y2="${round(yOf(g.historyLowPrice))}" />`
+      : "";
+
+  // One hover target per flat stretch, so the whole plot is interrogable without a JS tooltip
+  // layer — a native title is enough for a chart this small, and works on 30 cards at once.
+  const hover = series
+    .slice(0, -1)
+    .map((p, i) => {
+      const x1 = xOf(p.t);
+      const x2 = xOf(series[i + 1].t);
+      if (x2 - x1 < 0.5) return "";
+      const label = `${formatMoney(p.price, g.currency)}${p.cut > 0 ? ` (-${p.cut}%)` : " (full price)"} from ${formatDate(new Date(p.t).toISOString())}`;
+      return `<rect class="trend-hit" x="${round(x1)}" y="${CHART_PAD.top}" width="${round(x2 - x1)}" height="${plotH}"><title>${escapeHtml(label)}</title></rect>`;
+    })
+    .join("");
+
+  const endX = xOf(now);
+  const endY = yOf(series[series.length - 1].price);
+  return `<div class="sale-trend">
+      <span class="sale-trend-label">Price since ${formatDate(sales[sales.length - 1].startDate)} ${trendDirection(sales)}</span>
+      <svg class="trend-chart" viewBox="0 0 ${CHART_W} ${CHART_H}" role="img"
+           aria-label="Steam price over the last ${sales.length} sale(s), lowest ${formatMoney(lo, g.currency)}, highest ${formatMoney(hi, g.currency)}">
+        ${refLine}
+        <path class="trend-area" d="${area}" />
+        <path class="trend-line" d="${path}" />
+        <circle class="trend-dot" cx="${round(endX)}" cy="${round(endY)}" r="4" />
+        ${hover}
+        <text class="trend-axis" x="${CHART_PAD.left - 6}" y="${CHART_PAD.top + 4}" text-anchor="end">${formatMoney(hi, g.currency)}</text>
+        <text class="trend-axis" x="${CHART_PAD.left - 6}" y="${baseline}" text-anchor="end">${formatMoney(lo, g.currency)}</text>
+        <text class="trend-axis" x="${CHART_PAD.left}" y="${CHART_H - 2}">${formatDate(sales[sales.length - 1].startDate)}</text>
+        <text class="trend-axis" x="${CHART_W - CHART_PAD.right}" y="${CHART_H - 2}" text-anchor="end">now</text>
+      </svg>
+    </div>`;
 }
 
 function isBigDeal(g: WishlistGame): boolean {
@@ -215,9 +406,7 @@ function render() {
       lowestBlock = `<p class="not-lowest">${itadLink}</p>`;
     }
 
-    const elsewhereBlock = g.bestDealElsewhere
-      ? `<p class="elsewhere">Cheaper elsewhere: ${formatMoney(g.bestDealElsewhere.price, g.currency)} at ${g.bestDealElsewhere.shop}</p>`
-      : "";
+    const trendBlock = renderSaleTrend(g);
 
     const potentialPurchaseBadge =
       g.isLowestEver === true ? `<span class="potential-badge">Potential Purchase</span>` : "";
@@ -234,7 +423,7 @@ function render() {
         <h2><a href="${g.storeUrl}" target="_blank" rel="noopener">${g.name}</a></h2>
         ${priceBlock}
         ${lowestBlock}
-        ${elsewhereBlock}
+        ${trendBlock}
       </div>
     `;
     listEl.appendChild(card);
@@ -381,6 +570,17 @@ potentialOnlyCheckbox.addEventListener("change", render);
 bigDealOnlyCheckbox.addEventListener("change", render);
 expensiveOnlyCheckbox.addEventListener("change", render);
 searchInput.addEventListener("input", render);
+// Trend controls re-render from data already loaded — never refetch.
+trendToggle.addEventListener("change", () => {
+  trendCountInput.disabled = !trendToggle.checked;
+  saveTrendControls();
+  render();
+});
+trendCountInput.addEventListener("change", () => {
+  trendCountInput.value = String(trendCount()); // reflect the clamp back to the user
+  saveTrendControls();
+  render();
+});
 refreshBtn.addEventListener("click", () => load(true));
 forceRefreshBtn.addEventListener("click", () => load(true, true));
 debugToggle.addEventListener("change", () => {
@@ -389,4 +589,6 @@ debugToggle.addEventListener("change", () => {
 debugYearsInput.addEventListener("change", () => load());
 debugSaveBtn.addEventListener("click", saveDebugControls);
 
+// Restored before the first paint so a reload doesn't flash the default trend state.
+loadTrendControls();
 load();

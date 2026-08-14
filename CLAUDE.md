@@ -70,35 +70,74 @@ serves the static `public/` bundle otherwise. The route handler is a thin wrappe
 5. For each of those same items, concurrently
    look up its ITAD game UUID + public page URL from the Steam appid (`services/itad.ts`
    `lookupItadId`, `games/lookup/v1`).
-6. Batch-fetch current deals from ITAD for all resolved ITAD ids in one call (`fetchItadPrices`).
-   The price-history-low fetch depends on the `historyYears` window (see below): a scoped window
-   (years >= 1) only accepts one game id per call, so it's fetched per-game via `fetchItadHistoryLow`
-   (`games/history/v2`, scoped with `since`); all-time (years === 0) has a dedicated batch endpoint,
-   `fetchItadHistoryLowAllTime` (`games/historylow/v1`), fetched once for every resolved id like
-   `fetchItadPrices` above. Note: `since` must be an ISO timestamp with no milliseconds component
-   or ITAD 400s it — omitting `since` entirely does *not* return full history (ITAD defaults to a
-   short recent window), so it can't be used to approximate all-time.
-   Two batched ITAD endpoints exist but are deliberately *not* used, for reasons worth knowing
-   before "optimizing" them in: `POST /lookup/id/shop/61/v1` maps many Steam appids to ITAD ids
-   in one call, but returns only ids — no `slug`, and `itadUrl` is built from the slug, since
-   `games/info/v2` reports the slug form as the game's canonical URL. And `games/prices/v3`
-   already returns a `historyLow` block (`all`/`y1`/`m3`) that could serve `historyYears` 0 and 1
-   for free, but it carries no timestamp, so `historyLowDate` would be lost.
-7. Merge into `WishlistGame` objects (`src/types/wishlistItem.ts`), compute `isLowestEver` and
-   `bestDealElsewhere`, sort by price asc then discount % desc, and return `WishlistResponse`.
+6. **Sync** each resolved game's Steam price history into the local store (`services/priceHistory.ts`
+   → `fetchItadHistory`, `games/history/v2`). This is a sync, not a fetch: most games are already
+   current and cost *zero* upstream calls. See "Local price history" below.
+   Note: `since` must be an ISO timestamp with no milliseconds component or ITAD 400s it — and
+   omitting `since` entirely does *not* return full history (ITAD defaults to a short recent
+   window), so a backfill passes a deliberately ancient timestamp instead.
+   One batched ITAD endpoint exists but is deliberately *not* used:
+   `POST /lookup/id/shop/61/v1` maps many Steam appids to ITAD ids in one call, but returns only
+   ids — no `slug`, and `itadUrl` is built from the slug, since `games/info/v2` reports the slug
+   form as the game's canonical URL.
+7. Merge into `WishlistGame` objects (`src/types/wishlistItem.ts`), deriving `historyLowPrice`/
+   `isLowestEver` and `recentSales` from the **local** history rows, sort by price asc then
+   discount % desc, and return `WishlistResponse`.
 
-**Two independent layers of caching**, both against the same SQLite table
+**Steam-only, everywhere.** Every ITAD call is scoped to `shops=61` (Steam). The app compares
+Steam prices to Steam prices and nothing else — there is deliberately no "cheaper elsewhere"
+feature, and `games/prices/v3` (which existed only to serve it) is no longer called at all.
+Note the bare `shops=61` query form; `shops[]=61` makes ITAD return a 500.
+
+**Local price history (`src/cache/historyStore.ts`, tables `price_history` / `history_sync`)** —
+this is *not* a cache and has no TTL. A price change that happened on a date is a fact, so rows
+are only ever appended. Three consequences worth internalising before changing anything here:
+- **Store the log, never the low.** The lowest price *within a window* is derived per request by
+  `queryWindowLow`, because a rolling window slides: an old low ages out and the correct answer
+  moves back **up**. A stored-low-plus-min-merge can only ever move down, so it would pin
+  `isLowestEver` to a price that left the window and silently report false negatives forever.
+- **The window low excludes the sale currently in progress** (`priorSaleCeiling`). Since the
+  running sale is itself a row in the history, including it makes the low equal the current
+  price, and `isLowestEver` true for any game merely sitting at its usual discount. Excluding
+  it makes the flag mean the useful thing: *does this sale match or beat every previous one?*
+  Note the flag is `<=`, so a game that discounts to the same price every sale still reads as
+  true — that's accurate, not a bug. Tighten to `<` in `aggregate.ts` if you ever want the
+  filter to surface only sales that strictly beat their predecessors.
+- **The re-sync gate is the watermark (`synced_through`), never `last_change_at`.** The latter is
+  a property of how often the game goes on sale, not of our freshness — a dormant game's
+  last-change date is old permanently and no amount of fetching moves it, so gating on it would
+  re-poll exactly the games with nothing to fetch, on every refresh. `last_change_at` is stored
+  anyway because it's a good signal for how *often* to poll (adaptive cadence), if ever wanted.
+- **Backfill wide once** (`ITAD_HISTORY_BACKFILL_YEARS`, effectively all-time). It's one call
+  either way — only the payload differs — so scoping the first backfill to the currently
+  requested `years` would just guarantee another round trip per game the first time the user
+  widens the window. Because the backfill is wide, changing `years` costs **zero** ITAD calls;
+  it's a pure SQL re-query (verified: 1y/3y/all-time all served in ~45ms with 0 upstream calls).
+
+`recentSales` (which drives the UI's sale-trend chart) is folded from the same rows by `querySaleEpisodes`: a
+`cut > 0` entry opens a discount episode and the next `cut === 0` closes it, with consecutive
+`cut > 0` rows merged into one episode (Steam re-cuts mid-sale, which would otherwise split one
+sale into a run of adjacent one-day "sales"). An episode still open at the end of the log is a
+sale running right now (`endDate: null`).
+
+`pricePoints` (`queryPricePoints`) is the raw timeline the chart draws, bounded to the span of
+`recentSales` rather than to `historyYears` — a decade of points for `years=0` would bloat every
+response for a chart that only draws the recent stretch. It's sent as points, not a rendered
+path, so the client can re-window the chart without a refetch.
+
+**Two independent layers of caching**, both against the same SQLite file
 (`data/cache.sqlite`, via `src/cache/db.ts` / `cacheStore.ts`):
-- Per-endpoint caches (wishlist list, Steam price, Steam store metadata, ITAD lookup, ITAD
-  prices/historylow) — each with its own TTL from `config.cacheTtl`. The historylow caches are
-  additionally keyed by `historyYears`, since the same game has a different low price per window.
+- Per-endpoint caches (wishlist list, Steam price, Steam store metadata, ITAD lookup) — each with
+  its own TTL from `config.cacheTtl`.
   The Steam price/metadata caches are read and written **per appid** (`steam:price:v2:{appid}:{cc}`,
   `steam:item:v1:{appid}`) even though the fetches are batched, so a partially-warm wishlist only
   requests what it's actually missing.
 - A **per-game 24h cache** (`CACHE_TTL_GAME_SEC`) of the fully-enriched `WishlistGame`, keyed by
-  `wishlist:game:v2:{countryCode}:{historyYears}y:{appid}`. This is the layer that actually protects
+  `wishlist:game:v3:{countryCode}:{historyYears}y:{appid}`. This is the layer that actually protects
   against hitting Steam/ITAD rate limits — only games whose entry has expired (for the requested
-  `historyYears`) trigger new upstream calls, independent of anything else.
+  `historyYears`) trigger new upstream calls, independent of anything else. **Bump the `v3` when
+  `WishlistGame`'s shape changes**, or stale blobs render missing fields as empty (v3 added
+  `recentSales` and dropped `bestDealElsewhere`).
 - `getOrFetch()` is the shared read-through-cache helper used everywhere; `forceRefresh` bypasses
   the *read* but always writes the fresh result back.
 
@@ -107,7 +146,9 @@ serves the static `public/` bundle otherwise. The route handler is a thin wrappe
 - `refresh=1` — bypasses the wishlist-list cache only; per-game data still comes from the 24h
   cache if fresh.
 - `force=1` — implies `refresh=1` **and** bypasses the 24h per-game cache for every game (not
-  just stale ones), forcing a full re-fetch of price + ITAD data for the whole wishlist.
+  just stale ones), forcing a full re-fetch of price data for the whole wishlist. For price
+  *history* it forces a **delta** sync (`since = watermark`), deliberately not a re-backfill:
+  re-reading years of immutable rows costs wall time and buys nothing.
 - `debug=0` / `limit=N` — only meaningful when `DEBUG_GAME_LIMIT` is set server-side
   (`debugCapable`); lets the client narrow or lift the server-configured cap on how many on-sale
   wishlist games get enriched, for fast local iteration on a large wishlist.
@@ -115,6 +156,9 @@ serves the static `public/` bundle otherwise. The route handler is a thin wrappe
   `1` = past year (default), `2` = past two years, etc.; `0` = all-time. Always available
   (not gated behind `debugCapable`), though the UI control for it lives in the debug panel.
   Echoed back as `historyYears` on the response so the client can reflect the active window.
+  Since the backfill is wide, changing this is a local re-query — no upstream calls.
+  Note it scopes the *low* only: `recentSales` is deliberately not windowed, because "the last
+  3 sales" should mean the last 3 rather than silently rendering short inside a narrow window.
 
 **Rate limiting:** Steam's storefront API and ITAD's API are throttled independently, and the
 two use *different* limiters from `src/utils/concurrency.ts` because their limits differ in kind:
@@ -170,7 +214,27 @@ only" filter — the server only ever returns on-sale games, per the pipeline ab
 `public/index.html` / `styles.css` are static, not templated server-side.
 
 The controls bar (`.controls`) stacks three rows (`.controls-row`): sort/search/refresh/view-toggle,
-then the ITAD/potential-purchase filter checkboxes, then the debug panel. Refresh is an icon-only
+then the ITAD/potential-purchase filter checkboxes plus the sale-trend controls, then the debug
+panel. The **sale-trend** controls (a `Sale trend` checkbox and a `Sales shown` count, persisted
+to `localStorage` under `wishlist:saleTrend`) are pure display state: the server always sends up
+to `SALE_EPISODE_LIMIT` episodes and the client slices, so toggling either **re-renders without
+refetching**. Keep it that way — making the count a query param would fragment the per-game cache
+by every value the user ever picks, exactly as `historyYears` already does.
+
+The trend renders as a hand-built inline **SVG step chart** (`renderSaleTrend` in `app.ts`,
+`.trend-*` rules in `styles.css`) — no chart library, nothing fetched from a CDN. Two things to
+preserve if you touch it:
+- **It must stay a *step* line.** The price holds flat and then jumps; interpolating between
+  points would draw prices that never existed and would hide the return to full price between
+  sales, which is the entire shape worth seeing.
+- **The right edge is Steam's live price, not ITAD's last log entry**, so the chart agrees with
+  the price printed on the card even when ITAD's history lags a day or two behind a new sale.
+
+It's one series, so per the dataviz guidance there's no legend (the label above names it), the
+line wears `--accent` while all text stays in `--muted`, the reference hairline marks the prior
+low, and only the two price extremes are labelled. Hover targets are one `<rect>` per flat
+stretch with a native `<title>` — enough for a chart this small, and it scales to 30 cards
+without a tooltip engine. Refresh is an icon-only
 button (`.icon-btn`); Force Refresh stays a labeled text button since it's the higher-stakes action.
 Debug control values (debug mode, game limit, history years) are persisted to `localStorage`
 (`wishlist:debugControls`) only when the **Save** button in the debug row is clicked — not on every

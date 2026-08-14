@@ -46,6 +46,20 @@ export const config = {
   itadMaxRequestsPerWindow: intEnv("ITAD_MAX_REQUESTS_PER_WINDOW", 800),
   itadRateWindowSec: intEnv("ITAD_RATE_WINDOW_SEC", 300),
   itadThrottleMs: intEnv("ITAD_THROTTLE_MS", 50),
+  /** How stale a game's locally stored price history may get before a delta re-sync from ITAD.
+   *  **Not a TTL** — the rows themselves never expire, because a past price change is a fact.
+   *  This only bounds how long a gap (a sale that opened and closed while we weren't looking)
+   *  can go unnoticed. Games entering a sale are still caught immediately, via Steam's own
+   *  price call, so this can sit high. */
+  itadHistoryResyncSec: intEnv("ITAD_HISTORY_RESYNC_SEC", 2592000), // 30d
+  /** Lookback for a game's first history backfill. Effectively "all time" — ITAD returns
+   *  nothing before a game's first recorded price anyway, and a single wide backfill makes
+   *  every `years` window answerable locally without another upstream call. */
+  itadHistoryBackfillYears: intEnv("ITAD_HISTORY_BACKFILL_YEARS", 20),
+  /** Upper bound on sale episodes returned per game. The UI slices this down to the user's
+   *  chosen count client-side, so this only needs to exceed what anyone would want on screen —
+   *  keeping the count out of the cache key and off the network. */
+  saleEpisodeLimit: intEnv("SALE_EPISODE_LIMIT", 10),
   cacheTtl: {
     wishlistSec: intEnv("CACHE_TTL_WISHLIST_SEC", 21600),
     steamPriceSec: intEnv("CACHE_TTL_STEAM_PRICE_SEC", 3600),
@@ -57,7 +71,6 @@ export const config = {
      *  the price TTL; it only exists to keep GetItems batches small on a warm cache. */
     steamStoreItemSec: intEnv("CACHE_TTL_STEAM_ITEM_SEC", 604800),
     itadLookupSec: intEnv("CACHE_TTL_ITAD_LOOKUP_SEC", 2592000),
-    itadPriceSec: intEnv("CACHE_TTL_ITAD_PRICE_SEC", 3600),
     /** How long a game's fully-enriched data (price + ITAD deal/history) is reused before re-fetching. */
     gameSec: intEnv("CACHE_TTL_GAME_SEC", 86400),
   },

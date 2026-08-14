@@ -1,9 +1,12 @@
 import { config } from "../config.js";
 import { fetchJson } from "../utils/http.js";
 import { createWindowRateLimiter } from "../utils/concurrency.js";
-import type { ItadDeal, ItadHistoryLow } from "../types/itad.js";
+import type { ItadHistoryEntry } from "../types/itad.js";
 
 const BASE_URL = "https://api.isthereanydeal.com";
+
+/** ITAD's shop id for Steam. Every call here is scoped to it — see `fetchItadHistory`. */
+const STEAM_SHOP_ID = 61;
 
 // ITAD requests all share one budget, documented as a *window* quota ("1000 requests in a
 // 5 minute window" for a verified account) rather than a per-second rate. So the limiter is
@@ -46,121 +49,58 @@ export async function lookupItadId(appid: number): Promise<ItadLookupResult | nu
   return { id: raw.game.id, url: `https://isthereanydeal.com/game/${raw.game.slug}/` };
 }
 
-interface PricesRawResponse {
-  id: string;
-  deals: Array<{
-    shop: { id: number; name: string };
-    price: { amount: number; currency: string };
-    cut: number;
-    url: string;
-  }>;
-}
-
-/** Best current deal per ITAD game id, keyed by ITAD id. Empty array if no active deals. */
-export async function fetchItadPrices(
-  itadIds: string[],
-  countryCode: string = config.countryCode,
-): Promise<Record<string, ItadDeal[]>> {
-  const result: Record<string, ItadDeal[]> = {};
-  if (itadIds.length === 0) return result;
-
-  await throttle();
-  const url = new URL(`${BASE_URL}/games/prices/v3`);
-  url.searchParams.set("country", countryCode);
-  const raw = await fetchJson<PricesRawResponse[]>(url.toString(), {
-    method: "POST",
-    headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify(itadIds),
-    retries: 3,
-  });
-
-  for (const entry of raw) {
-    result[entry.id] = entry.deals.map((d) => ({
-      shop: d.shop.name,
-      price: d.price.amount,
-      currency: d.price.currency,
-      cut: d.cut,
-      url: d.url,
-    }));
-  }
-  return result;
-}
-
-// For a scoped window (years >= 1) we pull the price-change log via history/v2 (bounded with
-// `since`) and take the min ourselves — omitting `since` does NOT return the full log (ITAD
-// defaults to a short recent window in that case), so it cannot be used for "all time".
 interface HistoryRawEntry {
   timestamp: string;
   shop?: { id: number; name: string };
   deal: {
     price: { amount: number; currency: string };
+    regular: { amount: number; currency: string };
+    cut: number;
   };
 }
 
-/** Lowest price seen for one ITAD game id within the last `years` years (years >= 1), or null if none recorded. */
-export async function fetchItadHistoryLow(
+/**
+ * Steam's price-change log for one game since `sinceMs`, oldest entry first.
+ *
+ * Returns the raw entries rather than a reduced "lowest price" because the log is the part
+ * that's immutable — the low depends on a window that slides, and the sale trend needs the
+ * individual changes anyway. Callers persist these via `cache/historyStore.ts` and derive
+ * both locally.
+ *
+ * Scoped to `shops=61` (Steam). Beyond keeping the app's comparisons Steam-to-Steam, this is
+ * a ~25x payload reduction: an unfiltered two-year history for a popular game is ~300 entries
+ * across ~17 shops, of which ~13 are Steam's. Note the bare `shops=61` form — `shops[]=61`
+ * makes ITAD 500.
+ */
+export async function fetchItadHistory(
   itadId: string,
   countryCode: string = config.countryCode,
-  years: number = 1,
-): Promise<ItadHistoryLow | null> {
+  sinceMs: number,
+): Promise<ItadHistoryEntry[]> {
   await throttle();
   const url = new URL(`${BASE_URL}/games/history/v2`);
   url.searchParams.set("id", itadId);
   url.searchParams.set("country", countryCode);
+  url.searchParams.set("shops", String(STEAM_SHOP_ID));
   // ITAD rejects the milliseconds component that Date#toISOString() includes by default
   // ("Invalid 'since' format" / HTTP 400) — strip it down to whole-second precision.
-  const since = new Date(Date.now() - years * 365 * 24 * 60 * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+  // Omitting `since` does NOT mean "all history"; ITAD falls back to a short recent window,
+  // so a full backfill passes a deliberately ancient timestamp instead.
+  const since = new Date(sinceMs).toISOString().replace(/\.\d{3}Z$/, "Z");
   url.searchParams.set("since", since);
   const raw = await fetchJson<HistoryRawEntry[]>(url.toString(), {
     headers: authHeaders(),
     retries: 3,
   });
 
-  if (raw.length === 0) return null;
-  const lowest = raw.reduce((min, entry) => (entry.deal.price.amount < min.deal.price.amount ? entry : min));
-  return {
-    price: lowest.deal.price.amount,
-    currency: lowest.deal.price.currency,
-    shop: lowest.shop?.name ?? null,
-    timestamp: lowest.timestamp,
-  };
-}
-
-interface HistoryLowRawResponse {
-  id: string;
-  low?: {
-    shop?: { id: number; name: string };
-    price: { amount: number; currency: string };
-    timestamp: string;
-  };
-}
-
-/** All-time lowest price per ITAD game id, keyed by ITAD id (batched, like fetchItadPrices). */
-export async function fetchItadHistoryLowAllTime(
-  itadIds: string[],
-  countryCode: string = config.countryCode,
-): Promise<Record<string, ItadHistoryLow>> {
-  const result: Record<string, ItadHistoryLow> = {};
-  if (itadIds.length === 0) return result;
-
-  await throttle();
-  const url = new URL(`${BASE_URL}/games/historylow/v1`);
-  url.searchParams.set("country", countryCode);
-  const raw = await fetchJson<HistoryLowRawResponse[]>(url.toString(), {
-    method: "POST",
-    headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify(itadIds),
-    retries: 3,
-  });
-
-  for (const entry of raw) {
-    if (!entry.low) continue;
-    result[entry.id] = {
-      price: entry.low.price.amount,
-      currency: entry.low.price.currency,
-      shop: entry.low.shop?.name ?? null,
-      timestamp: entry.low.timestamp,
-    };
-  }
-  return result;
+  return raw
+    .map((entry) => ({
+      timestamp: new Date(entry.timestamp).getTime(),
+      price: entry.deal.price.amount,
+      regular: entry.deal.regular.amount,
+      cut: entry.deal.cut,
+      currency: entry.deal.price.currency,
+    }))
+    .filter((entry) => Number.isFinite(entry.timestamp))
+    .sort((a, b) => a.timestamp - b.timestamp);
 }

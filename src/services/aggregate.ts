@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
 import { config } from "../config.js";
 import { cacheGet, cacheSet, getOrFetch } from "../cache/cacheStore.js";
+import { queryWindowLow, querySaleEpisodes, queryPricePoints } from "../cache/historyStore.js";
 import { chunk, mapWithConcurrency } from "../utils/concurrency.js";
 import { fetchWishlist } from "./steamWishlist.js";
 import {
@@ -9,11 +9,11 @@ import {
   STEAM_PRICE_BATCH_SIZE,
   STEAM_ITEM_BATCH_SIZE,
 } from "./steamStore.js";
-import { lookupItadId, fetchItadPrices, fetchItadHistoryLow, fetchItadHistoryLowAllTime } from "./itad.js";
+import { lookupItadId } from "./itad.js";
+import { syncGameHistorySafe } from "./priceHistory.js";
 import { startProgress, setProgressPhase, incrementProgress, finishProgress } from "./progress.js";
 import { logger } from "../utils/logger.js";
 import type { WishlistGame, WishlistResponse } from "../types/wishlistItem.js";
-import type { ItadDeal, ItadHistoryLow } from "../types/itad.js";
 import type { ItadLookupResult } from "./itad.js";
 import type { SteamPriceOverview, SteamPriceResult, SteamStoreItem } from "../types/steam.js";
 
@@ -23,12 +23,12 @@ import type { SteamPriceOverview, SteamPriceResult, SteamStoreItem } from "../ty
 const ITAD_CONCURRENCY = 8;
 const PRICE_EPSILON = 0.005; // guards against float rounding when comparing prices
 
-function hashIds(ids: string[]): string {
-  return createHash("sha1").update([...ids].sort().join(",")).digest("hex").slice(0, 16);
-}
-
+// v3: added `recentSales`, dropped `bestDealElsewhere` (v2 blobs rendered an empty trend).
+// v4: `historyLowPrice`/`isLowestEver` now exclude the in-progress sale, so v3 values mean
+// something different — a shape change *or* a semantic change needs a bump.
+// v5: added `pricePoints` for the sale-trend chart.
 function gameCacheKey(appid: number, cc: string, historyYears: number): string {
-  return `wishlist:game:v2:${cc}:${historyYears}y:${appid}`;
+  return `wishlist:game:v5:${cc}:${historyYears}y:${appid}`;
 }
 
 // v2: prices are cached without the name/artwork that used to ride along in the same entry —
@@ -162,6 +162,7 @@ export async function getWishlistData(
   }
 
   let itadLookupFailures = 0;
+  let historySyncCalls = 0;
   if (staleItems.length > 0) {
     // Name + artwork only matter for games that survived the on-sale filter and aren't already
     // in the 24h game cache, so this batch is small; it's a separate endpoint because
@@ -222,61 +223,26 @@ export async function getWishlistData(
     const resolvedItadIds = [
       ...new Set([...itadLookupByAppid.values()].filter((v): v is ItadLookupResult => v !== null).map((v) => v.id)),
     ];
-    const idsHash = hashIds(resolvedItadIds);
 
-    let pricesByItadId: Record<string, ItadDeal[]> = {};
-    let historyLowByItadId: Record<string, ItadHistoryLow> = {};
+    // Price history is stored locally and permanently (`cache/historyStore.ts`), so this is a
+    // sync, not a fetch: most games are already current and cost zero upstream calls. Only a
+    // game we've never seen (full backfill) or one past ITAD_HISTORY_RESYNC_SEC (a small delta)
+    // goes to ITAD. This is what replaced the old one-history-call-per-game-per-refresh —
+    // which also had to re-run in full whenever `historyYears` changed, since the low was
+    // cached per window. Both the window low and the sale trend are now local queries.
     if (resolvedItadIds.length > 0) {
-      setProgressPhase("Fetching deal details…", resolvedItadIds.length);
-      try {
-        pricesByItadId = await getOrFetch(
-          `itad:prices:${cc}:${idsHash}`,
-          config.cacheTtl.itadPriceSec,
-          () => fetchItadPrices(resolvedItadIds, cc),
-          { forceRefresh },
-        );
-      } catch (err) {
-        logger.warn("ITAD batch price fetch failed", err);
-        warnings.push("Could not fetch current deals from ITAD");
-      }
-
-      if (historyYears === 0) {
-        // All-time low has a dedicated batch endpoint (like the prices call above), unlike
-        // the windowed lookup below which only accepts one game id per call.
-        try {
-          historyLowByItadId = await getOrFetch(
-            `itad:historylowall:${cc}:${idsHash}`,
-            config.cacheTtl.itadPriceSec,
-            () => fetchItadHistoryLowAllTime(resolvedItadIds, cc),
-            { forceRefresh },
-          );
-        } catch (err) {
-          logger.warn("ITAD batch all-time-low fetch failed", err);
-          warnings.push("Could not fetch all-time low prices from ITAD");
-        }
-        resolvedItadIds.forEach(() => incrementProgress());
-      } else {
-        // history/v2 (unlike historylow/v1) only accepts one game id per call, so this is
-        // fetched per-game and cached per-game rather than batched like the prices call above.
-        await mapWithConcurrency(
-          resolvedItadIds,
-          ITAD_CONCURRENCY,
-          async (itadId) => {
-            try {
-              const low = await getOrFetch(
-                `itad:historylow:${historyYears}y:${cc}:${itadId}`,
-                config.cacheTtl.itadPriceSec,
-                () => fetchItadHistoryLow(itadId, cc, historyYears),
-                { forceRefresh },
-              );
-              if (low) historyLowByItadId[itadId] = low;
-            } catch (err) {
-              logger.warn(`ITAD historylow fetch failed for id ${itadId}`, err);
-            }
-          },
-          () => incrementProgress(),
-        );
-      }
+      setProgressPhase("Syncing price history…", resolvedItadIds.length);
+      await mapWithConcurrency(
+        resolvedItadIds,
+        ITAD_CONCURRENCY,
+        async (itadId) => {
+          // Force Refresh always pulls the delta: the payload is tiny, and "I don't trust the
+          // cache" should still mean a fresh answer. It deliberately does *not* re-backfill —
+          // re-reading years of immutable rows buys nothing but wall time.
+          if (await syncGameHistorySafe(itadId, cc, { force: forceAllGames })) historySyncCalls++;
+        },
+        () => incrementProgress(),
+      );
     }
 
     staleItems.forEach((item) => {
@@ -284,8 +250,18 @@ export async function getWishlistData(
       const storeItem = storeItemByAppid.get(item.appid);
       const itadLookup = itadLookupByAppid.get(item.appid) ?? null;
       const itadId = itadLookup?.id ?? null;
-      const historyLow = itadId ? historyLowByItadId[itadId] : undefined;
-      const deals = itadId ? pricesByItadId[itadId] : undefined;
+      // Derived per request from the local history rows rather than fetched: the window low
+      // moves as the window slides (an old low ages out and the answer goes back *up*), so it
+      // can only ever be recomputed, never remembered. It also excludes the sale running right
+      // now, so `isLowestEver` asks whether this sale beats every *previous* one.
+      const historyLow = itadId ? queryWindowLow(itadId, cc, historyYears) : null;
+      const recentSales = itadId ? querySaleEpisodes(itadId, cc, config.saleEpisodeLimit) : [];
+      // The chart spans exactly the sales it plots, so the points are bounded by the oldest
+      // episode rather than by `historyYears` — sending a decade of points for years=0 would
+      // bloat the payload for a chart that only ever draws the recent stretch.
+      const oldestSale = recentSales[recentSales.length - 1];
+      const pricePoints =
+        itadId && oldestSale ? queryPricePoints(itadId, cc, new Date(oldestSale.startDate).getTime()) : [];
 
       const currentPrice = priceOverview ? priceOverview.final / 100 : null;
       const historyLowPrice = historyLow ? historyLow.price : null;
@@ -294,10 +270,6 @@ export async function getWishlistData(
       if (currentPrice !== null && historyLowPrice !== null) {
         isLowestEver = currentPrice <= historyLowPrice + PRICE_EPSILON;
       }
-
-      const bestDeal = deals?.length
-        ? deals.reduce((best, d) => (d.price < best.price ? d : best))
-        : null;
 
       const game: WishlistGame = {
         appid: item.appid,
@@ -325,10 +297,8 @@ export async function getWishlistData(
         historyLowPrice,
         historyLowDate: historyLow?.timestamp ?? null,
         isLowestEver,
-        bestDealElsewhere:
-          bestDeal && currentPrice !== null && bestDeal.price < currentPrice - PRICE_EPSILON
-            ? { shop: bestDeal.shop, price: bestDeal.price }
-            : null,
+        recentSales,
+        pricePoints,
 
         nextSaleEstimate: null, // populated by the stretch feature (M7), if built
       };
@@ -356,7 +326,8 @@ export async function getWishlistData(
   logger.info(
     `Wishlist refresh complete: ${games.length} on-sale game(s) returned — ` +
       `Steam prices: ${steamPriceSuccesses}/${fullWishlist.length} ok (${steamPriceFailures} failed); ` +
-      `ITAD lookups: ${itadLookupSuccesses}/${staleItems.length} ok (${itadLookupFailures} failed)`,
+      `ITAD lookups: ${itadLookupSuccesses}/${staleItems.length} ok (${itadLookupFailures} failed); ` +
+      `ITAD history syncs: ${historySyncCalls} (rest served from local history)`,
   );
 
   return {
