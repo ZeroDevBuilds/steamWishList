@@ -254,10 +254,19 @@ function stopProgressPolling() {
   progressBarFillEl.classList.remove("indeterminate");
 }
 
+function formatElapsed(totalSec: number): string {
+  const s = Math.floor(totalSec);
+  const hh = Math.floor(s / 3600);
+  const mm = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${mm}:${pad(ss)}`;
+}
+
 function renderProgress(progress: ProgressState) {
   progressBarEl.classList.remove("hidden");
   const elapsedSec = progress.startedAt ? Math.max(0, (Date.now() - progress.startedAt) / 1000) : 0;
-  const elapsedText = `${elapsedSec.toFixed(0)}s elapsed`;
+  const elapsedText = `${formatElapsed(elapsedSec)} elapsed`;
 
   if (progress.total > 0) {
     progressBarFillEl.classList.remove("indeterminate");
