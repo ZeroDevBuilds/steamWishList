@@ -1,18 +1,26 @@
 import { createHash } from "node:crypto";
 import { config } from "../config.js";
 import { cacheGet, cacheSet, getOrFetch } from "../cache/cacheStore.js";
-import { mapWithConcurrency } from "../utils/concurrency.js";
+import { chunk, mapWithConcurrency } from "../utils/concurrency.js";
 import { fetchWishlist } from "./steamWishlist.js";
-import { fetchSteamPrice } from "./steamStore.js";
+import {
+  fetchSteamPrices,
+  fetchSteamStoreItems,
+  STEAM_PRICE_BATCH_SIZE,
+  STEAM_ITEM_BATCH_SIZE,
+} from "./steamStore.js";
 import { lookupItadId, fetchItadPrices, fetchItadHistoryLow, fetchItadHistoryLowAllTime } from "./itad.js";
 import { startProgress, setProgressPhase, incrementProgress, finishProgress } from "./progress.js";
 import { logger } from "../utils/logger.js";
 import type { WishlistGame, WishlistResponse } from "../types/wishlistItem.js";
 import type { ItadDeal, ItadHistoryLow } from "../types/itad.js";
 import type { ItadLookupResult } from "./itad.js";
-import type { SteamPriceResult } from "../types/steam.js";
+import type { SteamPriceOverview, SteamPriceResult, SteamStoreItem } from "../types/steam.js";
 
-const CONCURRENCY = 5;
+// Only ITAD is fetched per-game now (Steam's calls are batched), and ITAD's quota is a window
+// budget rather than a rate — so the useful ceiling here is how many sockets to keep busy, with
+// `services/itad.ts`'s limiter enforcing the actual budget.
+const ITAD_CONCURRENCY = 8;
 const PRICE_EPSILON = 0.005; // guards against float rounding when comparing prices
 
 function hashIds(ids: string[]): string {
@@ -21,6 +29,16 @@ function hashIds(ids: string[]): string {
 
 function gameCacheKey(appid: number, cc: string, historyYears: number): string {
   return `wishlist:game:v2:${cc}:${historyYears}y:${appid}`;
+}
+
+// v2: prices are cached without the name/artwork that used to ride along in the same entry —
+// those now live under their own key, since they come from a different (batched) endpoint.
+function priceCacheKey(appid: number, cc: string): string {
+  return `steam:price:v2:${appid}:${cc}`;
+}
+
+function storeItemCacheKey(appid: number): string {
+  return `steam:item:v1:${appid}`;
 }
 
 export async function getWishlistData(
@@ -62,44 +80,60 @@ export async function getWishlistData(
   // games enriched with ITAD data, not the number of raw wishlist items checked for a sale.
   //
   // Deliberately keyed off `forceAllGames`, NOT `forceRefresh`: a plain refresh=1 only bypasses
-  // the wishlist-list cache (per CLAUDE.md's documented refresh semantics) and must not force a
-  // fresh Steam price check across the *entire* wishlist — that's hundreds of storefront calls
-  // in one burst, which is exactly what trips Steam's Akamai bot-block (see the rate-limiting
-  // note above). Only the explicit "Force Refresh" button accepts that risk.
+  // the wishlist-list cache (per CLAUDE.md's documented refresh semantics) and must not discard
+  // every cached price. Only the explicit "Force Refresh" button re-prices the whole wishlist.
+  //
+  // Prices are read from the per-appid cache first and only the misses go upstream, batched
+  // `STEAM_PRICE_BATCH_SIZE` appids per request. One request per game (what this used to do)
+  // meant ~300 throttled calls — minutes of wall time — every time the price cache went cold.
   setProgressPhase("Checking prices for sale status…", fullWishlist.length);
-  const steamPriceByAppid = new Map<number, SteamPriceResult>();
+  const steamPriceByAppid = new Map<number, SteamPriceOverview | null>();
+  const uncachedPriceAppids: number[] = [];
+  for (const item of fullWishlist) {
+    const cached = forceAllGames ? undefined : cacheGet<SteamPriceResult>(priceCacheKey(item.appid, cc));
+    if (cached) {
+      steamPriceByAppid.set(item.appid, cached.priceOverview);
+    } else {
+      uncachedPriceAppids.push(item.appid);
+    }
+  }
+  incrementProgress(fullWishlist.length - uncachedPriceAppids.length);
+
   let steamPriceFailures = 0;
-  await mapWithConcurrency(
-    fullWishlist,
-    CONCURRENCY,
-    async (item) => {
-      try {
-        const price = await getOrFetch(
-          `steam:price:${item.appid}:${cc}`,
-          config.cacheTtl.steamPriceSec,
-          () => fetchSteamPrice(item.appid, cc),
-          { forceRefresh: forceAllGames },
-        );
-        steamPriceByAppid.set(item.appid, price);
-      } catch (err) {
-        // Leave this appid out of the map (excluded from the sale filter below). Negative-cache
-        // the failure with a short TTL — long enough that reloading the page a moment later
-        // doesn't immediately re-hammer Steam for the same appid, short enough that it can't be
-        // mistaken for a real "no price data" result the way a full-TTL cache write would be.
-        logger.warn(`Steam price fetch failed for appid ${item.appid}`, err);
-        steamPriceFailures++;
-        cacheSet(`steam:price:${item.appid}:${cc}`, { appid: item.appid, priceOverview: null }, config.cacheTtl.steamPriceFailureSec);
+  // An appid missing from a batch's result (or a whole batch that threw) is a *transient*
+  // failure: leave it out of the map so it's excluded from the sale filter below, and
+  // negative-cache it with a short TTL — long enough that reloading the page a moment later
+  // doesn't immediately re-hammer Steam, short enough that it can't be mistaken for a real
+  // "no price data" result the way a full-TTL cache write would be.
+  const negativeCachePrice = (appid: number) => {
+    steamPriceFailures++;
+    cacheSet(priceCacheKey(appid, cc), { appid, priceOverview: null }, config.cacheTtl.steamPriceFailureSec);
+  };
+  for (const batch of chunk(uncachedPriceAppids, STEAM_PRICE_BATCH_SIZE)) {
+    try {
+      const prices = await fetchSteamPrices(batch, cc);
+      for (const appid of batch) {
+        const priceOverview = prices.get(appid);
+        if (priceOverview === undefined) {
+          negativeCachePrice(appid);
+          continue;
+        }
+        steamPriceByAppid.set(appid, priceOverview);
+        cacheSet(priceCacheKey(appid, cc), { appid, priceOverview }, config.cacheTtl.steamPriceSec);
       }
-    },
-    () => incrementProgress(),
-  );
+    } catch (err) {
+      logger.warn(`Steam price fetch failed for a batch of ${batch.length} appid(s)`, err);
+      batch.forEach(negativeCachePrice);
+    }
+    incrementProgress(batch.length);
+  }
   if (steamPriceFailures > 0) {
     warnings.push(`Could not fetch a Steam price for ${steamPriceFailures} wishlist game(s) — they were skipped`);
   }
 
   const onSaleWishlist = fullWishlist.filter((item) => {
     const price = steamPriceByAppid.get(item.appid);
-    return !!price?.priceOverview && price.priceOverview.discountPercent > 0;
+    return !!price && price.discountPercent > 0;
   });
 
   const wishlist = debugGameLimit !== undefined ? onSaleWishlist.slice(0, debugGameLimit) : onSaleWishlist;
@@ -129,13 +163,43 @@ export async function getWishlistData(
 
   let itadLookupFailures = 0;
   if (staleItems.length > 0) {
+    // Name + artwork only matter for games that survived the on-sale filter and aren't already
+    // in the 24h game cache, so this batch is small; it's a separate endpoint because
+    // appdetails refuses to batch anything beyond price_overview (see steamStore.ts).
+    const storeItemByAppid = new Map<number, SteamStoreItem>();
+    const uncachedItemAppids: number[] = [];
+    for (const item of staleItems) {
+      const cached = cacheGet<SteamStoreItem>(storeItemCacheKey(item.appid));
+      if (cached) {
+        storeItemByAppid.set(item.appid, cached);
+      } else {
+        uncachedItemAppids.push(item.appid);
+      }
+    }
+    if (uncachedItemAppids.length > 0) {
+      setProgressPhase("Fetching game details…", uncachedItemAppids.length);
+      for (const batch of chunk(uncachedItemAppids, STEAM_ITEM_BATCH_SIZE)) {
+        try {
+          const items = await fetchSteamStoreItems(batch, cc);
+          for (const [appid, storeItem] of items) {
+            storeItemByAppid.set(appid, storeItem);
+            cacheSet(storeItemCacheKey(appid), storeItem, config.cacheTtl.steamStoreItemSec);
+          }
+        } catch (err) {
+          // Non-fatal: the game still renders with a placeholder name and the guessed header URL.
+          logger.warn(`Steam store details fetch failed for a batch of ${batch.length} appid(s)`, err);
+        }
+        incrementProgress(batch.length);
+      }
+    }
+
     setProgressPhase("Fetching deals…", staleItems.length);
     // Steam prices were already fetched above (to determine sale status); only the ITAD
     // lookup remains to enrich these games.
     const itadLookupByAppid = new Map<number, ItadLookupResult | null>();
     await mapWithConcurrency(
       staleItems,
-      CONCURRENCY,
+      ITAD_CONCURRENCY,
       async (item) => {
         try {
           const itadLookup = await getOrFetch(
@@ -196,7 +260,7 @@ export async function getWishlistData(
         // fetched per-game and cached per-game rather than batched like the prices call above.
         await mapWithConcurrency(
           resolvedItadIds,
-          CONCURRENCY,
+          ITAD_CONCURRENCY,
           async (itadId) => {
             try {
               const low = await getOrFetch(
@@ -216,13 +280,14 @@ export async function getWishlistData(
     }
 
     staleItems.forEach((item) => {
-      const steamPrice = steamPriceByAppid.get(item.appid)!;
+      const priceOverview = steamPriceByAppid.get(item.appid) ?? null;
+      const storeItem = storeItemByAppid.get(item.appid);
       const itadLookup = itadLookupByAppid.get(item.appid) ?? null;
       const itadId = itadLookup?.id ?? null;
       const historyLow = itadId ? historyLowByItadId[itadId] : undefined;
       const deals = itadId ? pricesByItadId[itadId] : undefined;
 
-      const currentPrice = steamPrice.priceOverview ? steamPrice.priceOverview.final / 100 : null;
+      const currentPrice = priceOverview ? priceOverview.final / 100 : null;
       const historyLowPrice = historyLow ? historyLow.price : null;
 
       let isLowestEver: boolean | null = null;
@@ -236,24 +301,24 @@ export async function getWishlistData(
 
       const game: WishlistGame = {
         appid: item.appid,
-        name: steamPrice.name ?? `App ${item.appid}`,
-        // Steam's appdetails response gives the real, currently-valid header image URL. Newer
+        name: storeItem?.name ?? `App ${item.appid}`,
+        // Steam's store item response gives the real, currently-valid header image URL. Newer
         // titles use a hashed path under shared.akamai.steamstatic.com/store_item_assets/ rather
         // than the old static /steam/apps/{appid}/header.jpg convention, which 404s for them —
         // only fall back to guessing that convention if Steam didn't return one (e.g. delisted).
         headerImage:
-          steamPrice.headerImage ??
+          storeItem?.headerImage ??
           `https://cdn.akamai.steamstatic.com/steam/apps/${item.appid}/header.jpg`,
         storeUrl: `https://store.steampowered.com/app/${item.appid}`,
 
         priority: item.priority,
         dateAdded: item.dateAdded,
 
-        priceStatus: steamPrice.priceOverview ? "ok" : "unavailable",
-        currency: steamPrice.priceOverview?.currency ?? null,
+        priceStatus: priceOverview ? "ok" : "unavailable",
+        currency: priceOverview?.currency ?? null,
         currentPrice,
-        initialPrice: steamPrice.priceOverview ? steamPrice.priceOverview.initial / 100 : null,
-        discountPercent: steamPrice.priceOverview?.discountPercent ?? null,
+        initialPrice: priceOverview ? priceOverview.initial / 100 : null,
+        discountPercent: priceOverview?.discountPercent ?? null,
 
         itadStatus: itadId ? "ok" : "unmatched",
         itadUrl: itadLookup?.url ?? null,

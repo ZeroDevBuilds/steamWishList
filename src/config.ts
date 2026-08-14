@@ -40,6 +40,12 @@ export const config = {
   /** Minimum spacing between Steam storefront price requests — shared across all concurrent
    *  callers. Raise this if Steam starts 429ing (Akamai bot protection). */
   steamPriceThrottleMs: intEnv("STEAM_PRICE_THROTTLE_MS", 1000),
+  /** ITAD publishes a window quota ("1000 requests in a 5 minute window" for a verified
+   *  account) and asks clients not to sit at the ceiling, so the default budget is deliberately
+   *  below it. `itadThrottleMs` is a burst damper on top, not the sustained rate. */
+  itadMaxRequestsPerWindow: intEnv("ITAD_MAX_REQUESTS_PER_WINDOW", 800),
+  itadRateWindowSec: intEnv("ITAD_RATE_WINDOW_SEC", 300),
+  itadThrottleMs: intEnv("ITAD_THROTTLE_MS", 50),
   cacheTtl: {
     wishlistSec: intEnv("CACHE_TTL_WISHLIST_SEC", 21600),
     steamPriceSec: intEnv("CACHE_TTL_STEAM_PRICE_SEC", 3600),
@@ -47,6 +53,9 @@ export const config = {
      *  that a retried page load doesn't immediately re-hammer Steam, short enough that it isn't
      *  mistaken for a real "no price data" result for anywhere near the full price TTL. */
     steamPriceFailureSec: intEnv("CACHE_TTL_STEAM_PRICE_FAILURE_SEC", 120),
+    /** Steam store metadata (name, header artwork) — near-static, so this can sit well above
+     *  the price TTL; it only exists to keep GetItems batches small on a warm cache. */
+    steamStoreItemSec: intEnv("CACHE_TTL_STEAM_ITEM_SEC", 604800),
     itadLookupSec: intEnv("CACHE_TTL_ITAD_LOOKUP_SEC", 2592000),
     itadPriceSec: intEnv("CACHE_TTL_ITAD_PRICE_SEC", 3600),
     /** How long a game's fully-enriched data (price + ITAD deal/history) is reused before re-fetching. */

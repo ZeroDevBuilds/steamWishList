@@ -1,14 +1,22 @@
 import { config } from "../config.js";
 import { fetchJson } from "../utils/http.js";
-import { createRateLimiter } from "../utils/concurrency.js";
+import { createWindowRateLimiter } from "../utils/concurrency.js";
 import type { ItadDeal, ItadHistoryLow } from "../types/itad.js";
 
 const BASE_URL = "https://api.isthereanydeal.com";
 
-// ITAD requests all share one budget — the lookup endpoint in particular gets called
-// once per wishlist game, so without spacing these out a wishlist of any real size
-// bursts past ITAD's rate limit and gets 429s.
-const throttle = createRateLimiter(300);
+// ITAD requests all share one budget, documented as a *window* quota ("1000 requests in a
+// 5 minute window" for a verified account) rather than a per-second rate. So the limiter is
+// window-based: a refresh may burst through a few hundred calls, and only actually waits if
+// that budget runs out — which for a whole wishlist refresh it doesn't. Spacing every call a
+// fixed ~300ms apart instead (what this used to do) pinned throughput at the sustained
+// average even when the entire budget was untouched, and that was most of a refresh's wall
+// time once Steam's calls were batched.
+const throttle = createWindowRateLimiter({
+  maxRequests: config.itadMaxRequestsPerWindow,
+  windowMs: config.itadRateWindowSec * 1000,
+  minIntervalMs: config.itadThrottleMs,
+});
 
 function authHeaders(): Record<string, string> {
   return { "ITAD-API-Key": config.itadApiKey };

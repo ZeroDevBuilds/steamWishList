@@ -54,18 +54,23 @@ serves the static `public/` bundle otherwise. The route handler is a thin wrappe
 
 **Aggregation pipeline** (`src/services/aggregate.ts`):
 1. Fetch the raw wishlist (list of appids) from Steam — `services/steamWishlist.ts`.
-2. Fetch every wishlist item's Steam store price (`services/steamStore.ts`, concurrently via
-   `mapWithConcurrency`, limit 5) — this determines sale status, so it always runs against the
-   *full* wishlist regardless of the game limit (results are cached per-endpoint, so this is
-   cheap after the first run within `steamPriceSec`).
+2. Fetch every wishlist item's Steam store price (`fetchSteamPrices`, `services/steamStore.ts`) —
+   this determines sale status, so it always runs against the *full* wishlist regardless of the
+   game limit. Appids already in the per-appid price cache are served from there; the misses are
+   fetched in **batches** of `STEAM_PRICE_BATCH_SIZE` (150) appids per request, so a 315-game
+   wishlist is ~2 upstream calls (a few seconds), not 315 throttled ones (5+ minutes).
 3. Filter to games currently on sale (`discountPercent > 0`) and *then* apply the game limit
    (`debugGameLimit`) to that filtered set — the limit caps how many on-sale games get the
    expensive ITAD enrichment below, not how many raw wishlist items get price-checked. Games
    not on sale are dropped here and never appear in the response.
-4. For each surviving (on-sale, limited) item not already in the 24h per-game cache, concurrently
+4. For the surviving (on-sale, limited) items not already in the 24h per-game cache, batch-fetch
+   name + header artwork (`fetchSteamStoreItems`, `STEAM_ITEM_BATCH_SIZE` = 100 per request). This
+   is a *separate* endpoint from the price call by necessity, see the note below. Failure here is
+   non-fatal — the game renders with a placeholder name and the guessed header URL.
+5. For each of those same items, concurrently
    look up its ITAD game UUID + public page URL from the Steam appid (`services/itad.ts`
    `lookupItadId`, `games/lookup/v1`).
-5. Batch-fetch current deals from ITAD for all resolved ITAD ids in one call (`fetchItadPrices`).
+6. Batch-fetch current deals from ITAD for all resolved ITAD ids in one call (`fetchItadPrices`).
    The price-history-low fetch depends on the `historyYears` window (see below): a scoped window
    (years >= 1) only accepts one game id per call, so it's fetched per-game via `fetchItadHistoryLow`
    (`games/history/v2`, scoped with `since`); all-time (years === 0) has a dedicated batch endpoint,
@@ -73,14 +78,23 @@ serves the static `public/` bundle otherwise. The route handler is a thin wrappe
    `fetchItadPrices` above. Note: `since` must be an ISO timestamp with no milliseconds component
    or ITAD 400s it — omitting `since` entirely does *not* return full history (ITAD defaults to a
    short recent window), so it can't be used to approximate all-time.
-6. Merge into `WishlistGame` objects (`src/types/wishlistItem.ts`), compute `isLowestEver` and
+   Two batched ITAD endpoints exist but are deliberately *not* used, for reasons worth knowing
+   before "optimizing" them in: `POST /lookup/id/shop/61/v1` maps many Steam appids to ITAD ids
+   in one call, but returns only ids — no `slug`, and `itadUrl` is built from the slug, since
+   `games/info/v2` reports the slug form as the game's canonical URL. And `games/prices/v3`
+   already returns a `historyLow` block (`all`/`y1`/`m3`) that could serve `historyYears` 0 and 1
+   for free, but it carries no timestamp, so `historyLowDate` would be lost.
+7. Merge into `WishlistGame` objects (`src/types/wishlistItem.ts`), compute `isLowestEver` and
    `bestDealElsewhere`, sort by price asc then discount % desc, and return `WishlistResponse`.
 
 **Two independent layers of caching**, both against the same SQLite table
 (`data/cache.sqlite`, via `src/cache/db.ts` / `cacheStore.ts`):
-- Per-endpoint caches (wishlist list, Steam price, ITAD lookup, ITAD prices/historylow) — each
-  with its own TTL from `config.cacheTtl`. The historylow caches are additionally keyed by
-  `historyYears`, since the same game has a different low price per window.
+- Per-endpoint caches (wishlist list, Steam price, Steam store metadata, ITAD lookup, ITAD
+  prices/historylow) — each with its own TTL from `config.cacheTtl`. The historylow caches are
+  additionally keyed by `historyYears`, since the same game has a different low price per window.
+  The Steam price/metadata caches are read and written **per appid** (`steam:price:v2:{appid}:{cc}`,
+  `steam:item:v1:{appid}`) even though the fetches are batched, so a partially-warm wishlist only
+  requests what it's actually missing.
 - A **per-game 24h cache** (`CACHE_TTL_GAME_SEC`) of the fully-enriched `WishlistGame`, keyed by
   `wishlist:game:v2:{countryCode}:{historyYears}y:{appid}`. This is the layer that actually protects
   against hitting Steam/ITAD rate limits — only games whose entry has expired (for the requested
@@ -102,26 +116,50 @@ serves the static `public/` bundle otherwise. The route handler is a thin wrappe
   (not gated behind `debugCapable`), though the UI control for it lives in the debug panel.
   Echoed back as `historyYears` on the response so the client can reflect the active window.
 
-**Rate limiting:** Steam's storefront API and ITAD's API are each throttled independently via
-`createRateLimiter()` (`src/utils/concurrency.ts`), which spaces out calls to a shared resource
-to a minimum interval regardless of concurrent callers. `src/utils/http.ts`'s `fetchJson` adds
-retry-with-backoff on top, but only for 429/5xx — a 403 is treated as non-retryable and fails
-immediately. Steam's storefront endpoint in particular can 403 an entire IP after an unspaced
-burst (Akamai bot protection); because step 2 of the aggregation pipeline sweeps the *full*
-wishlist every time its cache goes cold, this is a real, recurring risk (not just theoretical —
-it has tripped in practice on a ~300-game wishlist). The spacing between Steam storefront calls
-is tunable via `STEAM_PRICE_THROTTLE_MS` (`config.steamPriceThrottleMs`, default 1000ms, shared
-across all `CONCURRENCY` workers in `aggregate.ts`) — raise it if 429s persist at the default.
-`fetchSteamPrice` (`services/steamStore.ts`)
-lets such failures propagate rather than swallowing them; `getWishlistData` catches them per-game,
-excludes that game from the response for this request (it's simply missing from the on-sale
-count, not shown as "unavailable"), and negative-caches the failure for a short TTL
-(`CACHE_TTL_STEAM_PRICE_FAILURE_SEC`, default 120s) — long enough that an immediate page reload
-doesn't re-hammer Steam for the same game, short enough that the failure isn't mistaken for a real
-"no price data" result anywhere near the full `steamPriceSec` TTL. **Do not** revert to caching a
-caught fetch error under the normal-TTL price cache key — that turned a several-second Akamai
-block into an hour of every game silently looking not-on-sale (see git history around the
-sale-filter/negative-cache fixes for the incident this guards against).
+**Rate limiting:** Steam's storefront API and ITAD's API are throttled independently, and the
+two use *different* limiters from `src/utils/concurrency.ts` because their limits differ in kind:
+- **Steam** — `createRateLimiter()`, a fixed minimum interval between calls, since Steam
+  publishes no quota and the risk is an unspaced burst tripping Akamai (see below).
+- **ITAD** — `createWindowRateLimiter()`, a sliding-window budget, because ITAD documents an
+  explicit quota (1000 requests / 5 min per key for a verified account) and asks clients not to
+  sit at the ceiling. Defaults are `ITAD_MAX_REQUESTS_PER_WINDOW=800` per `ITAD_RATE_WINDOW_SEC=300`,
+  plus a small `ITAD_THROTTLE_MS=50` burst damper. **Don't** swap this back for fixed spacing:
+  a whole refresh is a few hundred calls and then nothing for an hour, so pinning throughput at
+  the sustained average (the old 300ms spacing) wasted the entire budget and made ITAD the
+  slowest part of a refresh once Steam's calls were batched. Per-game ITAD calls run at
+  `ITAD_CONCURRENCY` (8) in `aggregate.ts`; the limiter, not the concurrency, is the real ceiling.
+
+`src/utils/http.ts`'s `fetchJson` adds retry-with-backoff on top of both (honouring `Retry-After`,
+which ITAD sends with its 429s), but only for 429/5xx — a 403 is treated as non-retryable and
+fails immediately. Steam's storefront endpoint in particular can 403 an entire IP after an unspaced
+burst (Akamai bot protection); step 2 of the aggregation pipeline sweeps the *full* wishlist
+every time its cache goes cold, so keeping that sweep to a handful of requests is what keeps it
+safe (it has tripped in practice on a ~300-game wishlist, back when the sweep was one request
+per game). The spacing between Steam calls is tunable via `STEAM_PRICE_THROTTLE_MS`
+(`config.steamPriceThrottleMs`, default 1000ms, shared by the price and store-metadata calls) —
+raise it if 429s persist at the default.
+
+**Batching Steam requests — the constraint to know:** `appdetails` only honours a
+comma-separated `appids=` list when `filters` is restricted to `price_overview`. Asking for
+`basic` (name, `header_image`) as well makes a multi-appid request return `null`, so the two
+can't be combined. Hence the split in `services/steamStore.ts`: `fetchSteamPrices` batches
+prices through `appdetails` (currency included), and `fetchSteamStoreItems` batches name +
+header artwork through the Web API's `IStoreBrowseService/GetItems/v1` (no API key needed;
+the header URL is assembled from `assets.asset_url_format` + `assets.header`, which reproduces
+appdetails' `header_image` exactly). **Do not** go back to one `appdetails` call per game.
+
+`fetchSteamPrices` lets transient failures propagate rather than swallowing them, and
+distinguishes them from real answers: an appid mapped to `null` is a definite "Steam has no
+price here" (delisted/free/region-locked), an appid *absent* from the returned map got no
+answer. A `null`/non-object response body throws rather than marking the whole batch priceless.
+`getWishlistData` excludes any failed appid from the response for this request (it's simply
+missing from the on-sale count, not shown as "unavailable") and negative-caches it for a short
+TTL (`CACHE_TTL_STEAM_PRICE_FAILURE_SEC`, default 120s) — long enough that an immediate page
+reload doesn't re-hammer Steam for the same game, short enough that the failure isn't mistaken
+for a real "no price data" result anywhere near the full `steamPriceSec` TTL. **Do not** revert
+to caching a caught fetch error under the normal-TTL price cache key — that turned a
+several-second Akamai block into an hour of every game silently looking not-on-sale (see git
+history around the sale-filter/negative-cache fixes for the incident this guards against).
 
 **Frontend:** `public/app.ts` (compiled to `app.js` via esbuild, no framework) fetches
 `/api/wishlist` and renders the game list plus the debug controls when `debugCapable` is true.

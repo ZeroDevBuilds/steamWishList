@@ -14,7 +14,12 @@ export interface SteamPriceOverview {
 
 export interface SteamPriceResult {
   appid: number;
+  priceOverview: SteamPriceOverview | null;
+}
+
+/** Store metadata (name, artwork) — fetched separately from price, see `services/steamStore.ts`. */
+export interface SteamStoreItem {
+  appid: number;
   name?: string;
   headerImage?: string;
-  priceOverview: SteamPriceOverview | null;
 }
