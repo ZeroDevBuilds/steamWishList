@@ -15,5 +15,6 @@ export interface SteamPriceOverview {
 export interface SteamPriceResult {
   appid: number;
   name?: string;
+  headerImage?: string;
   priceOverview: SteamPriceOverview | null;
 }

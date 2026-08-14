@@ -237,7 +237,13 @@ export async function getWishlistData(
       const game: WishlistGame = {
         appid: item.appid,
         name: steamPrice.name ?? `App ${item.appid}`,
-        headerImage: `https://cdn.akamai.steamstatic.com/steam/apps/${item.appid}/header.jpg`,
+        // Steam's appdetails response gives the real, currently-valid header image URL. Newer
+        // titles use a hashed path under shared.akamai.steamstatic.com/store_item_assets/ rather
+        // than the old static /steam/apps/{appid}/header.jpg convention, which 404s for them —
+        // only fall back to guessing that convention if Steam didn't return one (e.g. delisted).
+        headerImage:
+          steamPrice.headerImage ??
+          `https://cdn.akamai.steamstatic.com/steam/apps/${item.appid}/header.jpg`,
         storeUrl: `https://store.steampowered.com/app/${item.appid}`,
 
         priority: item.priority,

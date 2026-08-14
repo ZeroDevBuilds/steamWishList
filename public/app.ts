@@ -228,7 +228,7 @@ function render() {
       <a href="${g.storeUrl}" target="_blank" rel="noopener">
         ${potentialPurchaseBadge}
         ${bigDealBadge}
-        <img src="${g.headerImage}" alt="${g.name}" loading="lazy" />
+        <img src="${g.headerImage}" alt="${g.name}" loading="lazy" onerror="this.style.display='none'" />
       </a>
       <div class="body">
         <h2><a href="${g.storeUrl}" target="_blank" rel="noopener">${g.name}</a></h2>

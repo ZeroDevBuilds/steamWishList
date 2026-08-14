@@ -14,6 +14,7 @@ interface AppDetailsRawResponse {
     success: boolean;
     data?: {
       name?: string;
+      header_image?: string;
       price_overview?: {
         currency: string;
         initial: number;
@@ -50,6 +51,7 @@ export async function fetchSteamPrice(
   return {
     appid,
     name: entry.data.name,
+    headerImage: entry.data.header_image,
     priceOverview: po
       ? {
           currency: po.currency,
