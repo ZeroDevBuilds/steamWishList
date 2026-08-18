@@ -64,9 +64,10 @@ serves the static `public/` bundle otherwise. The route handler is a thin wrappe
    expensive ITAD enrichment below, not how many raw wishlist items get price-checked. Games
    not on sale are dropped here and never appear in the response.
 4. For the surviving (on-sale, limited) items not already in the 24h per-game cache, batch-fetch
-   name + header artwork (`fetchSteamStoreItems`, `STEAM_ITEM_BATCH_SIZE` = 100 per request). This
-   is a *separate* endpoint from the price call by necessity, see the note below. Failure here is
-   non-fatal — the game renders with a placeholder name and the guessed header URL.
+   name + header artwork + release date (`fetchSteamStoreItems`, `STEAM_ITEM_BATCH_SIZE` = 100 per
+   request). This is a *separate* endpoint from the price call by necessity, see the note below.
+   Failure here is non-fatal — the game renders with a placeholder name, the guessed header URL
+   and no release date.
 5. For each of those same items, concurrently
    look up its ITAD game UUID + public page URL from the Steam appid (`services/itad.ts`
    `lookupItadId`, `games/lookup/v1`).
@@ -130,14 +131,16 @@ path, so the client can re-window the chart without a refetch.
 - Per-endpoint caches (wishlist list, Steam price, Steam store metadata, ITAD lookup) — each with
   its own TTL from `config.cacheTtl`.
   The Steam price/metadata caches are read and written **per appid** (`steam:price:v2:{appid}:{cc}`,
-  `steam:item:v1:{appid}`) even though the fetches are batched, so a partially-warm wishlist only
-  requests what it's actually missing.
+  `steam:item:v2:{appid}`) even though the fetches are batched, so a partially-warm wishlist only
+  requests what it's actually missing. The item key carries a version for the same reason the
+  game key does — v2 added `releaseDate`, and v1 blobs would have rendered undated until their TTL
+  ran out.
 - A **per-game 24h cache** (`CACHE_TTL_GAME_SEC`) of the fully-enriched `WishlistGame`, keyed by
-  `wishlist:game:v3:{countryCode}:{historyYears}y:{appid}`. This is the layer that actually protects
+  `wishlist:game:v6:{countryCode}:{historyYears}y:{appid}`. This is the layer that actually protects
   against hitting Steam/ITAD rate limits — only games whose entry has expired (for the requested
-  `historyYears`) trigger new upstream calls, independent of anything else. **Bump the `v3` when
-  `WishlistGame`'s shape changes**, or stale blobs render missing fields as empty (v3 added
-  `recentSales` and dropped `bestDealElsewhere`).
+  `historyYears`) trigger new upstream calls, independent of anything else. **Bump the version when
+  `WishlistGame`'s shape *or its semantics* change**, or stale blobs render missing fields as empty
+  (see the running changelog above `gameCacheKey` in `aggregate.ts`).
 - `getOrFetch()` is the shared read-through-cache helper used everywhere; `forceRefresh` bypasses
   the *read* but always writes the fresh result back.
 
@@ -188,9 +191,13 @@ comma-separated `appids=` list when `filters` is restricted to `price_overview`.
 `basic` (name, `header_image`) as well makes a multi-appid request return `null`, so the two
 can't be combined. Hence the split in `services/steamStore.ts`: `fetchSteamPrices` batches
 prices through `appdetails` (currency included), and `fetchSteamStoreItems` batches name +
-header artwork through the Web API's `IStoreBrowseService/GetItems/v1` (no API key needed;
-the header URL is assembled from `assets.asset_url_format` + `assets.header`, which reproduces
-appdetails' `header_image` exactly). **Do not** go back to one `appdetails` call per game.
+header artwork + release date through the Web API's `IStoreBrowseService/GetItems/v1` (no API key
+needed; the header URL is assembled from `assets.asset_url_format` + `assets.header`, which
+reproduces appdetails' `header_image` exactly, and the release date comes from
+`release.steam_release_date`, unix seconds, which Steam sends as `0` rather than omitting when it
+has no date). GetItems' extra fields are opt-in `data_request` flags that widen the *same* call,
+so more per-game metadata costs no extra requests. **Do not** go back to one `appdetails` call
+per game.
 
 `fetchSteamPrices` lets transient failures propagate rather than swallowing them, and
 distinguishes them from real answers: an appid mapped to `null` is a definite "Steam has no
@@ -241,4 +248,8 @@ Debug control values (debug mode, game limit, history years) are persisted to `l
 change — and are restored from there (instead of from the server's `debugGameLimit`/`historyYears`
 defaults) on subsequent loads, including real browser reloads, via `loadSavedDebugControls()` /
 `pendingDebugReload` in `app.ts`. Dates (`formatDate`) render as `d MMM yyyy` (e.g. `13 Aug 2026`),
-not a numeric format.
+not a numeric format. The release date is the exception that reads its parts with **UTC** getters
+(`formatReleaseDate`): Steam's release timestamps are UTC midnights, so local getters would slide
+a launch day backwards for anyone west of UTC. It sits right-aligned opposite the title inside
+`.title-row`, which is also the flex child `.body` lays out in list view — style the row, not the
+`h2`, when changing that layout.

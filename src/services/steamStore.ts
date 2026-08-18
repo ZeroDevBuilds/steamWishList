@@ -97,14 +97,21 @@ interface StoreItemsRawResponse {
         asset_url_format?: string;
         header?: string;
       };
+      release?: {
+        /** unix seconds; 0 or absent for unreleased/undated apps. */
+        steam_release_date?: number;
+        /** Set for games that existed before their Steam launch; 0 when there's no separate date. */
+        original_release_date?: number;
+      };
     }>;
   };
 }
 
 /**
- * Name + header artwork for a batch of appids (max `STEAM_ITEM_BATCH_SIZE` per call), via the
- * official Web API's `IStoreBrowseService/GetItems` — the batched equivalent of appdetails'
- * `filters=basic`, which can't be batched (see `fetchSteamPrices`). Needs no API key.
+ * Name + header artwork + release date for a batch of appids (max `STEAM_ITEM_BATCH_SIZE` per
+ * call), via the official Web API's `IStoreBrowseService/GetItems` — the batched equivalent of
+ * appdetails' `filters=basic`, which can't be batched (see `fetchSteamPrices`). Needs no API key.
+ * Each extra `data_request` flag widens this same call rather than adding another one.
  *
  * Appids Steam has no visible store item for are simply absent from the returned map.
  */
@@ -118,7 +125,7 @@ export async function fetchSteamStoreItems(
   const input = {
     ids: appids.map((appid) => ({ appid })),
     context: { language: "english", country_code: countryCode.toUpperCase(), steam_realm: 1 },
-    data_request: { include_assets: true },
+    data_request: { include_assets: true, include_release: true },
   };
   const url = new URL("https://api.steampowered.com/IStoreBrowseService/GetItems/v1/");
   url.searchParams.set("input_json", JSON.stringify(input));
@@ -129,9 +136,12 @@ export async function fetchSteamStoreItems(
   for (const item of raw?.response?.store_items ?? []) {
     const appid = item.appid ?? item.id;
     if (appid === undefined || item.success !== 1 || !item.visible) continue;
+    // Steam sends 0 rather than omitting the field when it has no date, so treat that as absent.
+    const releaseDate = item.release?.steam_release_date || item.release?.original_release_date || undefined;
     result.set(appid, {
       appid,
       name: item.name,
+      releaseDate,
       // Newer titles' header lives at a hashed path, so it has to be assembled from the
       // per-app URL format plus the header filename rather than guessed from the appid.
       headerImage:

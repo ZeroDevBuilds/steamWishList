@@ -27,8 +27,9 @@ const PRICE_EPSILON = 0.005; // guards against float rounding when comparing pri
 // v4: `historyLowPrice`/`isLowestEver` now exclude the in-progress sale, so v3 values mean
 // something different — a shape change *or* a semantic change needs a bump.
 // v5: added `pricePoints` for the sale-trend chart.
+// v6: added `releaseDate`.
 function gameCacheKey(appid: number, cc: string, historyYears: number): string {
-  return `wishlist:game:v5:${cc}:${historyYears}y:${appid}`;
+  return `wishlist:game:v6:${cc}:${historyYears}y:${appid}`;
 }
 
 // v2: prices are cached without the name/artwork that used to ride along in the same entry —
@@ -37,8 +38,10 @@ function priceCacheKey(appid: number, cc: string): string {
   return `steam:price:v2:${appid}:${cc}`;
 }
 
+// v2: added `releaseDate` — v1 blobs would render every cached game without a release date
+// until their TTL expired.
 function storeItemCacheKey(appid: number): string {
-  return `steam:item:v1:${appid}`;
+  return `steam:item:v2:${appid}`;
 }
 
 export async function getWishlistData(
@@ -282,6 +285,7 @@ export async function getWishlistData(
           storeItem?.headerImage ??
           `https://cdn.akamai.steamstatic.com/steam/apps/${item.appid}/header.jpg`,
         storeUrl: `https://store.steampowered.com/app/${item.appid}`,
+        releaseDate: storeItem?.releaseDate ?? null,
 
         priority: item.priority,
         dateAdded: item.dateAdded,

@@ -13,6 +13,8 @@ export interface WishlistGame {
   name: string;
   headerImage: string;
   storeUrl: string;
+  /** Steam release date, unix seconds; null when Steam has no date for the app. */
+  releaseDate: number | null;
 
   priority?: number;
   dateAdded?: number;

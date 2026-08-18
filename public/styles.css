@@ -212,8 +212,13 @@ main {
   flex: 1;
 }
 
+/* The title row, not the h2, is the flex child of .body in list view. */
+.game-list.list-view .game-card .title-row {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
 .game-list.list-view .game-card h2 {
-  flex: 1 1 220px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -273,9 +278,24 @@ main {
   gap: 0.4rem;
 }
 
+.game-card .title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
 .game-card h2 {
   font-size: 1rem;
   margin: 0;
+}
+
+/* Right-aligned secondary detail — never squeezes the title off its own line. */
+.game-card .release-date {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .game-card a {

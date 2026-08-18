@@ -19,6 +19,8 @@ interface WishlistGame {
   name: string;
   headerImage: string;
   storeUrl: string;
+  /** Steam release date, unix seconds; null when Steam has no date for the app. */
+  releaseDate: number | null;
   dateAdded?: number;
   priceStatus: "ok" | "unavailable";
   currency: string | null;
@@ -186,6 +188,17 @@ function formatDate(iso: string | null): string {
   } catch {
     return iso;
   }
+}
+
+/**
+ * Steam's release dates are UTC (usually UTC midnight), so they're read back with UTC getters —
+ * local getters would slide a launch day backwards for anyone west of UTC.
+ */
+function formatReleaseDate(unixSeconds: number | null): string {
+  if (!unixSeconds) return "";
+  const d = new Date(unixSeconds * 1000);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${pad2(d.getUTCDate())} ${SHORT_MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
 function formatTime(date: Date): string {
@@ -360,6 +373,19 @@ function render() {
         return a.name.localeCompare(b.name);
       case "dateAdded":
         return (b.dateAdded ?? 0) - (a.dateAdded ?? 0);
+      // Undated games sink to the bottom of *both* directions rather than masquerading as
+      // ancient in one of them. The equality guard keeps two undated games from producing
+      // `Infinity - Infinity` (NaN), which makes a comparator's result undefined.
+      case "releaseNewest": {
+        const ra = a.releaseDate ?? -Infinity;
+        const rb = b.releaseDate ?? -Infinity;
+        return ra === rb ? 0 : rb - ra;
+      }
+      case "releaseOldest": {
+        const ra = a.releaseDate ?? Infinity;
+        const rb = b.releaseDate ?? Infinity;
+        return ra === rb ? 0 : ra - rb;
+      }
       case "price":
       default:
         return (a.currentPrice ?? Infinity) - (b.currentPrice ?? Infinity);
@@ -413,6 +439,9 @@ function render() {
 
     const bigDealBadge = isBigDeal(g) ? `<span class="big-deal-badge">Big Deal</span>` : "";
 
+    const released = formatReleaseDate(g.releaseDate);
+    const releaseBlock = released ? `<span class="release-date" title="Released ${released}">${released}</span>` : "";
+
     card.innerHTML = `
       <a href="${g.storeUrl}" target="_blank" rel="noopener">
         ${potentialPurchaseBadge}
@@ -420,7 +449,10 @@ function render() {
         <img src="${g.headerImage}" alt="${g.name}" loading="lazy" onerror="this.style.display='none'" />
       </a>
       <div class="body">
-        <h2><a href="${g.storeUrl}" target="_blank" rel="noopener">${g.name}</a></h2>
+        <div class="title-row">
+          <h2><a href="${g.storeUrl}" target="_blank" rel="noopener">${g.name}</a></h2>
+          ${releaseBlock}
+        </div>
         ${priceBlock}
         ${lowestBlock}
         ${trendBlock}

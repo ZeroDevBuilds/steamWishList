@@ -17,9 +17,11 @@ export interface SteamPriceResult {
   priceOverview: SteamPriceOverview | null;
 }
 
-/** Store metadata (name, artwork) — fetched separately from price, see `services/steamStore.ts`. */
+/** Store metadata (name, artwork, release) — fetched separately from price, see `services/steamStore.ts`. */
 export interface SteamStoreItem {
   appid: number;
   name?: string;
   headerImage?: string;
+  /** Steam release date, unix seconds. Absent for unreleased/undated apps. */
+  releaseDate?: number;
 }
